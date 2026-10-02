@@ -1,0 +1,29 @@
+[project]
+name = "my-git-utils"
+version = "0.1.0"
+description = "Personal git command-line utilities"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["rich>=13"]
+
+[project.scripts]
+git-log = "my_git_utils.log.core:main"
+git-log-pick = "my_git_utils.log.pick:main"
+git-log-pr = "my_git_utils.log.pr:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.10"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
