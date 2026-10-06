@@ -3,7 +3,7 @@
 Usage:
   glpr [<pr-number>|<pr-url>|<branch>] [git-log arguments] [--] [paths]
 
-  Without a selector, uses the PR of the current branch (`gh pr view`).
+  Without a selector, uses the branch's recorded PR association or discovers its PR.
   Lines are marked "◀ HEAD", "◀ PR-HEAD" (the commit GitHub has for the PR)
   and "◀ PR-BASE" (the remote-tracking tip of the branch the PR merges into).
 
@@ -32,6 +32,7 @@ from dataclasses import dataclass
 
 from rich.console import Console
 
+from ..pr import context
 from . import core, git
 
 err = Console(stderr=True, highlight=False)
@@ -60,18 +61,11 @@ def note(message: str) -> None:
 
 
 def view_pr(selector: str | None) -> tuple[PullRequest | None, str]:
-    """(PR, "") from `gh pr view`, or (None, reason)."""
-    if not shutil.which("gh"):
-        return None, "gh is not installed"
-    proc = subprocess.run(
-        ["gh", "pr", "view", *([selector] if selector else []), "--json", PR_FIELDS],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        reason = (proc.stderr.strip().splitlines() or ["gh pr view failed"])[0]
-        return None, reason
-    data = json.loads(proc.stdout)
+    """Return a PR or a genuine no-match result; propagate operational errors."""
+    try:
+        data = context.read_pr(selector, fields=PR_FIELDS)
+    except context.NoPR as exc:
+        return None, str(exc)
     base = PR_URL.search(data["url"])
     owner = (data.get("headRepositoryOwner") or {}).get("login", "")
     name = (data.get("headRepository") or {}).get("name", "")
@@ -243,7 +237,11 @@ def main(argv: list[str] | None = None) -> int:
     if len(args.revs) > 1:
         print(f"git-log-pr: expected one PR selector, got: {' '.join(args.revs)}", file=sys.stderr)
         return 2
-    pr, reason = view_pr(args.revs[0] if args.revs else None)
+    try:
+        pr, reason = view_pr(args.revs[0] if args.revs else None)
+    except context.LookupError as exc:
+        print(f"git-log-pr: {exc}", file=sys.stderr)
+        return exc.status
     if pr:
         summary(pr)
         marked_revs = pr_revs(pr)

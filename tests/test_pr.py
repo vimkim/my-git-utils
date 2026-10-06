@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -13,10 +12,25 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 def fake_gh(bin_dir: Path, payload: dict | None, error: str = "no pull requests found") -> None:
     script = bin_dir / "gh"
-    if payload is None:
-        script.write_text(f"#!/bin/sh\necho '{error}' >&2\nexit 1\n")
-    else:
-        script.write_text(f"#!/bin/sh\ncat <<'EOF'\n{json.dumps(payload)}\nEOF\n")
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json,sys\n"
+        f"data = {payload!r}\n"
+        f"error = {error!r}\n"
+        "args = sys.argv[1:]\n"
+        "if data is None and error != 'no pull requests found':\n"
+        " print(error,file=sys.stderr); sys.exit(1)\n"
+        "if args[:2] == ['repo','view']:\n"
+        " value = {'nameWithOwner':'CUBRID/cubrid','defaultBranchRef':{'name':'main'}}\n"
+        "elif args[:1] == ['api']:\n"
+        " nodes = [] if not data else [{'url':data['url'],'headRefName':data['headRefName'],\n"
+        " 'headRepository':{'nameWithOwner':data['headRepositoryOwner']['login']+'/cubrid'},\n"
+        " 'headRepositoryOwner':data['headRepositoryOwner']}]\n"
+        " value = [{'data':{'repository':{'pullRequests':{'nodes':nodes}}}}]\n"
+        "else:\n"
+        " value = data\n"
+        "print(json.dumps(value))\n"
+    )
     script.chmod(0o755)
 
 
@@ -25,6 +39,7 @@ def github_remotes(tmp_path: Path, repo: dict[str, str]) -> dict[str, str]:
     github.com URLs, with commits the local clone has not fetched yet."""
     local = Path(repo["path"])
     shas = {}
+    git(local, "config", "branch.feature.pr-url", "https://github.com/CUBRID/cubrid/pull/7")
     for name, slug in (("upstream", "CUBRID/cubrid"), ("fork", "me/cubrid")):
         bare = tmp_path / f"{name}.git"
         git(tmp_path, "clone", "-q", "--bare", str(local), str(bare))
@@ -126,3 +141,11 @@ def test_stale_base_oid_marks_tracking_tip_without_fetching(
     out = ANSI.sub("", capsys.readouterr().out)
     assert re.search(r"develop moved .*◀ PR-BASE", out)
     assert not any(c[:2] == ["git", "fetch"] for c in calls)
+
+
+def test_operational_failure_does_not_render_fallback(repo, stub_bin, capsys):
+    fake_gh(stub_bin, None, error="HTTP 401: Bad credentials")
+    assert pr.main([]) == 3
+    captured = capsys.readouterr()
+    assert "Bad credentials" in captured.err
+    assert not captured.out

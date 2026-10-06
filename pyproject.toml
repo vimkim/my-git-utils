@@ -11,6 +11,8 @@ dependencies = ["rich>=13"]
 git-log = "my_git_utils.log.core:main"
 git-log-pick = "my_git_utils.log.pick:main"
 git-log-pr = "my_git_utils.log.pr:main"
+gh-pr-info = "my_git_utils.pr.context:info_main"
+gh-pr-associate = "my_git_utils.pr.context:associate_main"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]

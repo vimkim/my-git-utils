@@ -22,6 +22,18 @@ _Avoid_: remote HEAD branch, PR branch, source branch
 The branch a pull request merges into.
 _Avoid_: PR target, target branch, base branch
 
+## Pull-request context
+
+**PR association**:
+A recorded link between a local branch and a specific pull request.
+It persists until explicitly replaced or cleared, even if the pull request closes.
+_Avoid_: PR cache, inferred PR
+
+**PR discovery**:
+Finding the pull request related to a local checkout when no PR association or
+explicit selection is available.
+_Avoid_: PR association
+
 ## Display
 
 **Label**:
