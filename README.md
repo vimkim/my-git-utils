@@ -120,7 +120,7 @@ Exit codes: `0` success, `1` no matching PR, `2` invalid context or ambiguous
 selection, `3` an operational Git/GitHub/tool failure. `--jq` uses `jq -r`;
 without it, stdout contains one JSON object and diagnostics go to stderr.
 
-Personal `gh-pr-url` and `gh-pr-view` wrappers live in chezmoi and use
+The personal `gh-pr-url` wrapper lives in chezmoi and uses
 `gh-pr-info --json url --jq .url`. Install the new entry points from the main
 checkout with `just sync` after merging; deploy each reviewed chezmoi target
 separately. CUBRID callers use the same resolver with `--repo CUBRID/cubrid`.

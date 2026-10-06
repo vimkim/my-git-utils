@@ -52,7 +52,7 @@ authorized implementation after the final contract summary.
   `--jq`. Requested live metadata is queried from GitHub. A request for only
   an associated URL is served locally. Keep output machine-readable and send
   errors to stderr.
-- Chezmoi manages thin `gh-pr-url` and `gh-pr-view` wrappers, the background
+- Chezmoi manages the thin `gh-pr-url` wrapper, the background
   Starship caller, the rebase lookup, and the Nushell `ghpr` alias.
 - Update `my-cubrid`'s `cubrid-pr-status`, `cubrid-pr-tc-base-check`,
   `cubrid-format-pr-diff.sh`, and `cubrid-pr-review-worktree`. The optional
@@ -119,3 +119,10 @@ GitHub branch; correcting lookup alone does not change that requirement.
   and no branches have been pushed. Review-ready commits are the delivery
   boundary; local merges and installation/deployment follow their respective
   user authorizations.
+
+## Follow-up: retire the duplicate URL command
+
+After deployment, the user requested removal of `gh-pr-view` because it had
+exactly the same behavior as `gh-pr-url`. Keep `gh-pr-url` as the URL command;
+use `gh-pr-info` for JSON metadata and `gh pr view URL` for readable details.
+Earlier references above record the initial design and verification history.
