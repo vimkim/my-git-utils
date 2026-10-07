@@ -31,8 +31,8 @@ def report(audits: list[Audit], coverage: Coverage, show_all: bool, offline: boo
             console.print("  No findings", style="green")
         for finding in audit.findings:
             console.print(
-                f"  {finding.label}: {finding.detail}",
-                style=STYLES.get(finding.label, ""),
+                f"  {finding.kind}: {finding.detail}",
+                style=STYLES.get(finding.kind, ""),
                 markup=False,
             )
             if finding.path:
@@ -43,7 +43,7 @@ def report(audits: list[Audit], coverage: Coverage, show_all: bool, offline: boo
         console.print(f"Audit exclusion: {excluded}", markup=False)
     console.print(
         f"Repositories: {len(audits) + len(coverage.exclusions)} | Worktrees: "
-        f"{sum(w.exists for a in audits for w in a.worktrees)}",
+        f"{sum(w.inspected for a in audits for w in a.worktrees)}",
         markup=False,
     )
     console.print(

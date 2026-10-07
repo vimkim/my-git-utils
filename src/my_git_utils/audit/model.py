@@ -10,6 +10,7 @@ class Worktree:
     branch: str = "detached HEAD"
     head: str = ""
     bare: bool = False
+    inspected: bool = False
 
     @property
     def exists(self) -> bool:
@@ -25,10 +26,13 @@ class Repository:
 
 @dataclass
 class Finding:
-    label: str
+    kind: str
     detail: str
     path: Path | None = None
-    unknown: bool = False
+
+    @property
+    def unknown(self) -> bool:
+        return self.kind == "Unknown"
 
 
 @dataclass
@@ -39,7 +43,7 @@ class Audit:
 
     @property
     def primary(self) -> Path | None:
-        existing = [w.path for w in self.worktrees if w.exists]
+        existing = [w.path for w in self.worktrees if w.inspected]
         if not existing:
             return None
         if self.worktrees[0].path in existing:

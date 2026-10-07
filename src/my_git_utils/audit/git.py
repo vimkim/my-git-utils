@@ -12,7 +12,7 @@ class GitError(Exception):
     pass
 
 
-def run(path: Path, *args: str, timeout: float = 30) -> str:
+def run(path: Path, *args: str, timeout: float = 30, isolated: bool = False) -> str:
     env = dict(os.environ)
     for key in (
         "GIT_DIR",
@@ -23,6 +23,10 @@ def run(path: Path, *args: str, timeout: float = 30) -> str:
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     ):
         env.pop(key, None)
+    if isolated:
+        env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+        env.pop("GIT_CONFIG_COUNT", None)
+        env.pop("GIT_CONFIG_PARAMETERS", None)
     env.update(
         GIT_TERMINAL_PROMPT="0",
         GCM_INTERACTIVE="never",

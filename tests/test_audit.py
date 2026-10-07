@@ -89,6 +89,11 @@ def remote_transport(stub_bin, monkeypatch):
 import json, os, subprocess, sys, time
 args = sys.argv[1:]
 if 'fetch' in args:
+    if 'AUDIT_REQUIRE_HEADER' in os.environ:
+        gitdir = args[args.index('-C') + 1]
+        value = subprocess.check_output([os.environ['AUDIT_TEST_GIT'], '-C', gitdir,
+                                         'config', '--get', 'http.extraHeader']).decode().strip()
+        assert value == os.environ['AUDIT_REQUIRE_HEADER']
     remotes = json.loads(os.environ['AUDIT_TEST_REMOTES'])
     for i, arg in enumerate(args):
         if arg in remotes:
@@ -648,3 +653,88 @@ def test_chooser_cancellation_and_failure_have_distinct_exit_statuses(
     assert "No GitHub remote" in result.stdout
     if expected:
         assert "fzf exited 2" in result.stderr
+
+
+def test_alternate_route_to_same_github_destination_retains_publication(
+    audit_env, tmp_path, remote_transport, monkeypatch
+):
+    import json
+
+    _, root = audit_env
+    path = repository(root / "project")
+    remote = tmp_path / "remote.git"
+    git(path, "clone", "-q", "--bare", str(path), str(remote))
+    url = remote_transport(path, "origin", "FAIL")
+    ssh = "git@github.com:test/origin.git"
+    git(path, "remote", "set-url", "--push", "origin", ssh)
+    monkeypatch.setenv("AUDIT_TEST_REMOTES", json.dumps({url: "FAIL", ssh: str(remote)}))
+    result = run_audit()
+    assert result.returncode == 1  # retain the failed route diagnostic
+    assert "test remote unavailable" in result.stdout
+    assert "main: publication inconclusive" not in result.stdout
+    assert "Local commits need review" not in result.stdout
+
+
+def test_repository_transport_configuration_survives_isolation_without_second_rewrite(
+    audit_env, tmp_path, remote_transport, stub_bin, monkeypatch
+):
+    import json
+    import os
+
+    _, root = audit_env
+    path = repository(root / "project")
+    remote = tmp_path / "remote.git"
+    git(path, "clone", "-q", "--bare", str(path), str(remote))
+    url = remote_transport(path, "origin", remote)
+    git(path, "config", "http.extraHeader", "Test: local configuration")
+    monkeypatch.setenv("AUDIT_REQUIRE_HEADER", "Test: local configuration")
+    # Rewrites are intentionally nonrecursive in Git. Applying them again to
+    # an already effective URL would change the verification destination.
+    global_config = Path(os.environ["GIT_CONFIG_GLOBAL"])
+    global_config.write_text(
+        '[url "https://github.com/test/"]\n    insteadOf = alias:\n'
+        '[url "https://github.com/wrong/"]\n    insteadOf = https://github.com/test/\n'
+    )
+    git(path, "remote", "set-url", "origin", "alias:origin.git")
+    monkeypatch.setenv("AUDIT_TEST_REMOTES", json.dumps({url: str(remote)}))
+    result = run_audit("--all")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "No findings" in result.stdout
+
+
+def test_live_stash_ref_is_reported_even_without_reflog(audit_env):
+    _, root = audit_env
+    path = repository(root / "project")
+    (path / "file").write_text("saved")
+    git(path, "stash", "push", "-qu", "-m", "save me")
+    (path / ".git/logs/refs/stash").unlink()
+    result = run_audit()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Stashes:" in result.stdout
+
+
+def test_invalid_nested_worktree_link_is_unknown_without_inspecting_parent(audit_env):
+    _, root = audit_env
+    path = repository(root / "project")
+    nested = path / "nested"
+    git(path, "worktree", "add", "-q", "-b", "nested", str(nested))
+    (nested / ".git").unlink()
+    result = run_audit()
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Unknown:" in result.stdout
+    assert "Worktrees: 1" in result.stdout
+    assert "registered path is not this worktree" in result.stdout
+
+
+def test_raw_branch_remote_includes_push_rewrite(audit_env, tmp_path, remote_transport):
+    _, root = audit_env
+    path = repository(root / "project")
+    remote = tmp_path / "remote.git"
+    git(path, "clone", "-q", "--bare", str(path), str(remote))
+    remote_transport(path, "origin", remote)
+    git(path, "remote", "remove", "origin")
+    git(path, "config", "branch.main.remote", "https://example.com/origin.git")
+    git(path, "config", "url.https://github.com/test/.pushInsteadOf", "https://example.com/")
+    result = run_audit("--all")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "No findings" in result.stdout and "No GitHub remote" not in result.stdout

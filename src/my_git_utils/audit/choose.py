@@ -20,10 +20,10 @@ def rows(audits: list[Audit], show_all: bool) -> dict[Path, tuple[Audit, str]]:
         if not audit.findings and not show_all:
             continue
         for worktree in audit.worktrees:
-            if not worktree.exists:
+            if not worktree.inspected:
                 continue
             findings = [
-                f.label
+                f.kind
                 for f in audit.findings
                 if f.path == worktree.path or (f.path is None and worktree.path == audit.primary)
             ]
