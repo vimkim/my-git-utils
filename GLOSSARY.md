@@ -48,3 +48,31 @@ _Avoid_: label, pin
 A ref pruned from broad revision options (`--all`, `--branches`, `--remotes`,
 `--glob`) by the configured filters; a ref named explicitly is never hidden.
 _Avoid_: excluded ref, filtered branch
+
+## Local work audits
+
+**Local work audit**:
+A report of local project work that needs attention for preservation on GitHub,
+including unpublished commits and tags and unfinished local work.
+_Avoid_: Backup guarantee, exact branch synchronization
+
+**Unfinished local work**:
+File modifications, untracked files, and stashes awaiting a decision about
+preservation or publication.
+
+**Audit coverage**:
+The set of local repositories and their worktrees included in a local work audit.
+
+**Verified remote state**:
+Remote history successfully checked for the current local work audit.
+_Avoid_: Cached remote state
+
+**Verified publication**:
+Evidence from the current audit that a local commit or tag is present on at
+least one configured GitHub remote.
+_Avoid_: Matching upstream, equivalent changes
+
+**Audit exclusion**:
+A project explicitly omitted from audit coverage, including its related
+worktrees. Absence of a GitHub remote does not itself make a project excluded.
+_Avoid_: Hidden ref

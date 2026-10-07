@@ -127,6 +127,9 @@ separately. CUBRID callers use the same resolver with `--repo CUBRID/cubrid`.
 
 ## Development
 
+The planned `git-unsynced` command is described in the
+[local Git work audit design](docs/git-unsynced-design.md).
+
 ```sh
 uv run pytest      # or: just test
 just lint          # ruff check + format check
