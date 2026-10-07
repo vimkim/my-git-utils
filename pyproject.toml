@@ -5,9 +5,10 @@ description = "Personal git command-line utilities"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = ["rich>=13"]
+dependencies = ["rich>=13", "PyYAML>=6"]
 
 [project.scripts]
+git-unsynced = "my_git_utils.audit.cli:main"
 git-log = "my_git_utils.log.core:main"
 git-log-pick = "my_git_utils.log.pick:main"
 git-log-pr = "my_git_utils.log.pr:main"

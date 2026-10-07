@@ -8,6 +8,7 @@ Personal git command-line utilities. Terms are defined in
 | `git-log` | `gl` | compact colored `git log --graph`, labelling only refs worth reading |
 | `git-log-pick` | `glp` | fzf-pick two commits from the `--all` map, then their log with `◀ A` / `◀ B` |
 | `git-log-pr` | `glpr` | HEAD, the PR head and the PR base, marked `◀ HEAD` / `◀ PR-HEAD` / `◀ PR-BASE` |
+| `git-unsynced` | — | local work needing attention for preservation on GitHub |
 | `gh-pr-info` | — | the associated or discovered PR, as JSON |
 | `gh-pr-associate` | — | explicitly record or clear the current branch's PR association |
 
@@ -17,7 +18,7 @@ Run any command with `-h` for its full usage.
 
 Requires [uv](https://docs.astral.sh/uv/), [just](https://just.systems/), and
 for the individual commands `fzf` (`git-log-pick`) and `gh` (live PR lookup).
-`gh-pr-info --jq` also requires `jq`.
+`gh-pr-info --jq` also requires `jq`; `git-unsynced --choose` requires fzf and lazygit.
 
 ```sh
 git clone https://github.com/vimkim/my-git-utils.git ~/gh/my-git-utils
@@ -125,10 +126,65 @@ The personal `gh-pr-url` wrapper lives in chezmoi and uses
 checkout with `just sync` after merging; deploy each reviewed chezmoi target
 separately. CUBRID callers use the same resolver with `--repo CUBRID/cubrid`.
 
-## Development
+## git-unsynced
 
-The planned `git-unsynced` command is described in the
-[local Git work audit design](docs/git-unsynced-design.md).
+```sh
+git-unsynced                       # fresh report of findings and unknown checks
+git-unsynced --all                 # also show repositories with no findings
+git-unsynced --choose              # review worktrees in lazygit, repeating after each visit
+git-unsynced --offline             # use cached remote histories without contacting GitHub
+git-unsynced --root ~/projects     # add a scan root; repeat for several roots
+git-unsynced --config audit.toml   # use a chosen personal configuration
+```
+
+Discovers projects from lazygit history and `~/gh`, `~/temp`, and `~/tmp`, then
+includes every registered worktree. Repositories sharing a Git common directory
+are grouped. Hidden project directories are included; dependency trees, Git
+metadata, ignored files, and reflog-only revisions are outside audit coverage.
+Directory symlinks are followed only when explicitly supplied or registered.
+
+The report checks every branch, detached worktree commits, worktree files,
+shared stashes, and tags. Publication on any configured GitHub destination
+counts, including forks, separate push URLs, and explicit branch remote URLs.
+Commit identity and ancestry are compared, so work published through equivalent
+changes after a squash merge, rebase, or cherry-pick can still need review.
+Being behind a remote branch alone produces no finding.
+
+Fresh remote checks use disposable Git directories and preserve local refs,
+working files, the index, and `FETCH_HEAD`. Failures remain visible; another
+successful remote can still prove publication. Shallow history and missing
+objects make absence checks inconclusive. Tags require the same name and direct
+object identity, including the annotation object. Offline evidence is labelled
+cached; ordinary local tags do not prove remote publication.
+
+The chooser lists worktrees directly and opens the exact selected path with
+`lazygit -p`. Unchecked branches, stashes, and tags select the primary existing
+worktree. After lazygit exits, the repository is refreshed and the chooser
+returns with updated rows. Esc, no matches, or an empty list finish the session.
+Publication remains a user action in lazygit.
+
+Personal settings live in `~/.config/my-git-utils/audit.toml` (respecting
+`XDG_CONFIG_HOME`), separately from Git log display filters:
+
+```toml
+roots = ["~/gh", "~/temp", "~/tmp"] # replaces the defaults; --root adds paths
+exclude = ["~/gh/intentionally-local"] # excludes the entire project and its worktrees
+timeout = 30                       # seconds per remote check
+concurrency = 4                    # maximum repositories checked at once
+```
+
+All settings are optional. Lazygit history uses
+`$XDG_STATE_HOME/lazygit/state.yml` (default `~/.local/state/lazygit/state.yml`),
+falling back to `$XDG_CONFIG_HOME/lazygit/state.yml` when absent. Malformed
+history, failed checks, and missing registered paths appear in the report and
+coverage totals. Colors follow terminal detection and `NO_COLOR`.
+
+Exit codes: `0` completed, including ordinary review findings; `1` incomplete
+operational checks or chooser failure; `2` invalid options or configuration.
+No-finding results are scoped to the displayed coverage and evidence freshness.
+See the [accepted design](docs/git-unsynced-design.md) for verification policy.
+
+## Development
 
 ```sh
 uv run pytest      # or: just test
@@ -136,4 +192,5 @@ just lint          # ruff check + format check
 just fmt
 ```
 
-Tests build throwaway repositories and stub `gh` and `fzf` on `PATH`.
+Tests build throwaway repositories and stub Git transports, `gh`, `fzf`, and
+`lazygit` on `PATH`.
