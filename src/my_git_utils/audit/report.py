@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from rich.console import Console
 
+from .config import Config
 from .discovery import Coverage
 from .model import Audit
 
@@ -15,11 +16,20 @@ STYLES = {
 }
 
 
-def report(audits: list[Audit], coverage: Coverage, show_all: bool, offline: bool) -> None:
+def report(
+    audits: list[Audit], coverage: Coverage, show_all: bool, offline: bool, config: Config
+) -> None:
     console = Console(highlight=False, soft_wrap=True)
     console.print(
         "Local work audit — " + ("cached offline evidence" if offline else "fresh evidence")
     )
+    if config.remotes is None:
+        remote_scope = "all configured GitHub destinations"
+    elif config.remotes:
+        remote_scope = ", ".join(config.remotes) + " (remote names)"
+    else:
+        remote_scope = "none (remote checks disabled)"
+    console.print(f"Remote scope: {remote_scope}", markup=False)
     for audit in audits:
         if not audit.findings and not show_all:
             continue
@@ -62,6 +72,6 @@ def report(audits: list[Audit], coverage: Coverage, show_all: bool, offline: boo
         "shared repositories; files and detached commits only in listed worktrees. "
         "Ignored files and reflog-only revisions excluded. Commit identities are compared; "
         "equivalent changes "
-        "and unconfigured GitHub destinations are outside verification.",
+        "and GitHub destinations outside the remote scope are outside verification.",
         markup=False,
     )

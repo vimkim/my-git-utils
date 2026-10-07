@@ -68,7 +68,10 @@ def resolve_ssh_identity(url: str) -> str:
     return f"git@{hostname}:{slug}"
 
 
-def destinations(path: Path) -> tuple[list[Destination], list[str]]:
+def destinations(
+    path: Path, keep_remotes: list[str] | None = None
+) -> tuple[list[Destination], list[str]]:
+    """A keep-list selects named remotes before resolving any of their URLs."""
     result: dict[str, Destination] = {}
     errors: list[str] = []
     remotes = git.run(path, "remote").splitlines()
@@ -90,9 +93,13 @@ def destinations(path: Path) -> tuple[list[Destination], list[str]]:
             errors.append(f"unresolved GitHub URL identity: {url}")
 
     for remote in remotes:
+        if keep_remotes is not None and remote not in keep_remotes:
+            continue
         for direction in ([], ["--push"]):
             for url in git.run(path, "remote", "get-url", *direction, "--all", remote).splitlines():
                 add(url, remote if not direction else None)
+    if keep_remotes is not None:
+        return list(result.values()), errors
     entries = [
         entry.partition("\n")[::2]
         for entry in git.run(path, "config", "--null", "--list").split("\0")

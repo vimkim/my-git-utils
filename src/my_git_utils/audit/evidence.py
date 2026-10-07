@@ -159,12 +159,17 @@ def check_publication(
     try:
         if progress:
             progress.task(audit.repository, "configured remote destinations")
-        targets, errors = destinations(path)
+        targets, errors = destinations(path, config.remotes)
         audit.findings.extend(Finding("Unknown", error) for error in errors)
         if not targets:
             if not errors:
                 audit.findings.append(
-                    Finding("No GitHub remote", "No configured GitHub destination")
+                    Finding(
+                        "No GitHub remote",
+                        "No configured GitHub destination"
+                        if config.remotes is None
+                        else "No GitHub destination matches the remote keep-list",
+                    )
                 )
             return
         history = History(

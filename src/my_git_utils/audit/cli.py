@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
                 results[str(repository.common)] = future.result()
                 progress.finished(repository)
         audits = [results[str(r.common)] for r in coverage.repositories]
-    report(audits, coverage, args.all, args.offline)
+    report(audits, coverage, args.all, args.offline, config)
     if args.choose:
         try:
             choose(audits, coverage, config, args.all, args.offline, not args.quiet)

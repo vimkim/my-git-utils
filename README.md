@@ -156,8 +156,9 @@ uncertain. Remote checks show their configured timeout. The final report stays
 on stdout; use `--quiet` to disable progress, including chooser refreshes.
 
 The report checks every branch, listed detached worktree commits, listed
-worktree files, shared stashes, and tags. Publication on any configured GitHub destination
-counts, including forks, separate push URLs, and explicit branch remote URLs.
+worktree files, shared stashes, and tags. Publication on any GitHub destination
+in the audit's remote scope counts. By default this includes all configured
+remotes, forks, separate push URLs, and explicit branch remote URLs.
 Commit identity and ancestry are compared, so work published through equivalent
 changes after a squash merge, rebase, or cherry-pick can still need review.
 Being behind a remote branch alone produces no finding.
@@ -182,7 +183,19 @@ Personal settings live in `~/.config/my-git-utils/audit.toml` (respecting
 exclude = ["~/gh/intentionally-local"] # excludes the entire project and its worktrees
 timeout = 30                       # seconds per remote check
 concurrency = 4                    # maximum repositories checked at once
+remotes = ["origin", "vimkim"]      # check only these remote names (optional)
 ```
+
+The `remotes` keep-list is strict and matches exact remote names, not GitHub
+owners. It skips other remotes, such as forks added for PR review, before
+resolving their URLs or contacting them. Both fetch and push URLs of selected
+remotes count. Explicit branch remote URLs are skipped when a keep-list is
+configured. The same scope applies to offline evidence and chooser refreshes;
+ignored remotes cannot prove publication. Repositories without a matching
+GitHub destination still have their local work checked and report
+"No GitHub destination matches the remote keep-list". The report displays the
+remote scope. Omit `remotes` to check all configured destinations; `remotes = []`
+disables remote checks without excluding local repositories.
 
 All settings are optional. The former `roots` setting and `--root` option are
 no longer supported; remove `roots` from existing configurations. Lazygit

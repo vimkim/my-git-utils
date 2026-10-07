@@ -16,6 +16,7 @@ class Config:
     exclude: list[Path]
     timeout: float = 30
     concurrency: int = 4
+    remotes: list[str] | None = None
 
 
 def load(path: Path | None) -> Config:
@@ -31,12 +32,17 @@ def load(path: Path | None) -> Config:
         raise ValueError(f"{path}: {err}") from err
     if "roots" in data:
         raise ValueError("roots is no longer supported; audit coverage uses lazygit recentrepos")
-    unknown = set(data) - {"exclude", "timeout", "concurrency"}
+    unknown = set(data) - {"exclude", "timeout", "concurrency", "remotes"}
     if unknown:
         raise ValueError(f"unknown configuration keys: {', '.join(sorted(unknown))}")
     exclude = data.get("exclude", [])
     if not isinstance(exclude, list) or any(not isinstance(p, str) for p in exclude):
         raise ValueError("exclude must be an array of paths")
+    remotes = data.get("remotes")
+    if remotes is not None and (
+        not isinstance(remotes, list) or any(not isinstance(r, str) or not r for r in remotes)
+    ):
+        raise ValueError("remotes must be an array of nonempty remote names")
     timeout = data.get("timeout", 30)
     concurrency = data.get("concurrency", 4)
     if (
@@ -49,7 +55,8 @@ def load(path: Path | None) -> Config:
     if isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency <= 0:
         raise ValueError("concurrency must be a positive integer")
     return Config(
-        [Path(p).expanduser().resolve() for p in exclude],
-        timeout,
-        concurrency,
+        exclude=[Path(p).expanduser().resolve() for p in exclude],
+        timeout=timeout,
+        concurrency=concurrency,
+        remotes=remotes,
     )

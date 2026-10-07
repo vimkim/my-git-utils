@@ -87,7 +87,7 @@ def choose(
             updated = inspect(audit.repository, config, offline, progress)
             progress.finished(audit.repository)
         audits[audits.index(audit)] = updated
-        report(audits, coverage, show_all, offline)
+        report(audits, coverage, show_all, offline, config)
         if opened.returncode:
             raise ValueError(f"lazygit exited {opened.returncode}")
     return

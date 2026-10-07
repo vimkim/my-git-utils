@@ -213,6 +213,9 @@ def remote_transport(stub_bin, monkeypatch):
 import json, os, subprocess, sys, time
 args = sys.argv[1:]
 if 'fetch' in args:
+    if 'AUDIT_FETCH_URLS' in os.environ:
+        with open(os.environ['AUDIT_FETCH_URLS'], 'a') as log:
+            log.write(args[args.index('--no-recurse-submodules') + 1] + '\\n')
     if 'AUDIT_REQUIRE_HEADER' in os.environ:
         gitdir = args[args.index('-C') + 1]
         value = subprocess.check_output([os.environ['AUDIT_TEST_GIT'], '-C', gitdir,
@@ -255,6 +258,117 @@ os.execv(os.environ['AUDIT_TEST_GIT'], [os.environ['AUDIT_TEST_GIT'], *args])
         return url
 
     return add
+
+
+def test_remote_keep_list_skips_review_forks_and_explicit_branch_urls(
+    audit_env, tmp_path, remote_transport, stub_bin, monkeypatch
+):
+    home, root = audit_env
+    path = repository(root / "project")
+    recent_repos(home, path)
+    origin = tmp_path / "origin.git"
+    personal = tmp_path / "personal.git"
+    git(path, "clone", "-q", "--bare", str(path), str(origin))
+    commit(path, "published on personal fork")
+    git(path, "tag", "personal-tag")
+    git(path, "clone", "-q", "--bare", str(path), str(personal))
+    origin_url = remote_transport(path, "origin", origin)
+    personal_url = remote_transport(path, "vimkim", personal)
+    review_url = remote_transport(path, "review", "FAIL")
+    git(path, "config", "branch.main.remote", review_url)
+    git(path, "config", "branch.main.pushRemote", "review")
+    git(path, "remote", "add", "broken", "git@unresolved-alias:test/broken.git")
+    ssh = stub_bin / "ssh"
+    ssh.write_text('#!/bin/sh\nprintf "hostname unresolved-alias\\n"\n')
+    ssh.chmod(0o755)
+    (path / "todo.txt").write_text("unfinished work")
+    before_refs = git(path, "show-ref")
+    fetch_log = tmp_path / "fetch-urls"
+    monkeypatch.setenv("AUDIT_FETCH_URLS", str(fetch_log))
+    config = home / ".config/my-git-utils/audit.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text('remotes = ["origin", "vimkim"]\n')
+
+    result = run_audit("--all")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert fetch_log.read_text().splitlines() == [origin_url, personal_url]
+    assert "Local commits need review" not in result.stdout
+    assert "Unpublished tags" not in result.stdout
+    assert "Unknown checks: 0" in result.stdout
+    assert "todo.txt" in result.stdout
+    assert "Remote scope: origin, vimkim" in result.stdout
+    assert git(path, "show-ref") == before_refs
+
+
+def test_offline_remote_keep_list_excludes_review_evidence_for_shared_destination(
+    audit_env, remote_transport
+):
+    home, root = audit_env
+    path = repository(root / "project")
+    recent_repos(home, path)
+    origin_url = remote_transport(path, "origin", "FAIL")
+    remote_transport(path, "review", "FAIL")
+    git(path, "remote", "set-url", "review", origin_url)
+    git(path, "update-ref", "refs/remotes/origin/main", git(path, "rev-parse", "HEAD"))
+    head = commit(path, "only review remote preserves this")
+    git(path, "update-ref", "refs/remotes/review/main", head)
+    config = home / "audit.toml"
+    config.write_text('remotes = ["origin", "vimkim"]\n')
+
+    result = run_audit("--offline", "--config", str(config))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Local commits need review: main: 1 commit" in result.stdout
+    assert "Unknown checks: 0" in result.stdout
+
+
+@pytest.mark.parametrize("remotes", ['["origin", "vimkim"]', "[]"])
+def test_remote_keep_list_does_not_fall_back_when_no_remote_matches(
+    audit_env, tmp_path, remote_transport, monkeypatch, remotes
+):
+    home, root = audit_env
+    path = repository(root / "project")
+    recent_repos(home, path)
+    url = remote_transport(path, "review", "FAIL")
+    git(path, "config", "branch.main.remote", url)
+    (path / "todo.txt").write_text("unfinished work")
+    fetch_log = tmp_path / "fetch-urls"
+    monkeypatch.setenv("AUDIT_FETCH_URLS", str(fetch_log))
+    config = home / "audit.toml"
+    config.write_text(f"remotes = {remotes}\n")
+
+    result = run_audit("--config", str(config))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not fetch_log.exists()
+    assert "No GitHub remote: No GitHub destination matches the remote keep-list" in result.stdout
+    assert "todo.txt" in result.stdout
+    assert "Unknown checks: 0" in result.stdout
+
+
+def test_remote_keep_list_preserves_selected_remote_push_urls(
+    audit_env, tmp_path, remote_transport
+):
+    home, root = audit_env
+    path = repository(root / "project")
+    recent_repos(home, path)
+    origin = tmp_path / "origin.git"
+    git(path, "clone", "-q", "--bare", str(path), str(origin))
+    commit(path, "published only on push destination")
+    personal = tmp_path / "personal.git"
+    git(path, "clone", "-q", "--bare", str(path), str(personal))
+    remote_transport(path, "origin", origin)
+    push_url = remote_transport(path, "push-destination", personal)
+    git(path, "remote", "set-url", "--push", "origin", push_url)
+    git(path, "remote", "remove", "push-destination")
+    config = home / "audit.toml"
+    config.write_text('remotes = ["origin"]\n')
+
+    result = run_audit("--all", "--config", str(config))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "No findings" in result.stdout
 
 
 def test_fresh_publication_in_any_remote_and_local_state_preservation(
@@ -598,8 +712,9 @@ def test_ssh_alias_and_unresolved_identity_are_reported(
 
 
 @pytest.mark.parametrize("quiet", [False, True])
+@pytest.mark.parametrize("keep_list", [False, True])
 def test_chooser_publishes_unchecked_branch_then_empty_list_finishes(
-    audit_env, tmp_path, remote_transport, stub_bin, monkeypatch, quiet
+    audit_env, tmp_path, remote_transport, stub_bin, monkeypatch, quiet, keep_list
 ):
     home, root = audit_env
     path = repository(root / "project")
@@ -608,6 +723,11 @@ def test_chooser_publishes_unchecked_branch_then_empty_list_finishes(
     git(path, "clone", "-q", "--bare", str(path), str(remote))
     remote_transport(path, "origin", remote)
     git(path, "switch", "-q", "-c", "unchecked")
+    if keep_list:
+        remote_transport(path, "review", "FAIL")
+        config = home / ".config/my-git-utils/audit.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text('remotes = ["origin", "vimkim"]\n')
     commit(path, "local work")
     git(path, "switch", "-q", "main")
     monkeypatch.setenv("AUDIT_PUBLICATION_REMOTE", str(remote))
@@ -631,6 +751,8 @@ subprocess.run(['git', '-C', sys.argv[2], 'push', '-q',
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.count("Local commits need review: unchecked") == 1
     assert "Projects with no findings: 1" in result.stdout
+    if keep_list:
+        assert result.stdout.count("Remote scope: origin, vimkim") == 2
     if quiet:
         assert result.stderr == ""
     else:
@@ -661,6 +783,9 @@ def test_fresh_fetch_handles_unusual_primary_path_and_noncommit_tag(
         "timeout = 0",
         "timeout = inf",
         "concurrency = true",
+        'remotes = "origin"',
+        'remotes = ["origin", 1]',
+        'remotes = [""]',
         "typo = 1",
     ],
 )

@@ -25,7 +25,9 @@ recent-repository history are included, including for worktree file checks.
   than requiring origin or the branch's intended push destination. GitHub
   remotes may include personal forks, organization repositories, and named
   review remotes. Explicit branch remote/push-remote URLs also count as
-  configured destinations.
+  configured destinations by default. An optional strict remote-name
+  keep-list limits publication evidence to the selected named remotes' fetch
+  and push URLs; other remotes and explicit branch URLs are outside that scope.
 - Contact configured GitHub remotes by default before comparing histories.
   Provide an offline mode. A failed remote refresh produces unknown status
   for publication claims not established by another successful remote check.
@@ -158,6 +160,12 @@ current report filter. Cancellation or an empty list ends the chooser.
   `roots` setting and `--root` option are rejected; configurations must remove
   `roots`. Exclusions designate projects and apply to all their listed
   worktrees. An exclusion outside the recent list does not expand coverage.
+- The optional `remotes` array is a strict keep-list of exact remote names,
+  independent of Git log display filters. Omission keeps all configured GitHub
+  destinations; an empty array disables remote checks. Apply it before URL
+  resolution, in fresh and offline checks and chooser refreshes. Never fall
+  back to ignored remotes when none match. Report the selected remote scope;
+  repositories without a matching GitHub destination still get local checks.
 - Read only lazygit recent paths and deduplicate by canonical Git common
   directory. Resolve symlinks and worktree subdirectories, and select only the
   matching registered worktrees for inspection. Do not traverse project roots.
@@ -207,8 +215,9 @@ current report filter. Cancellation or an empty list ends the chooser.
   rather than automatically downloading their entire history. Positive
   publication evidence remains useful.
 - Resolve effective Git URLs, including `insteadOf` rewrites and separately
-  configured push URLs. Inspect named remotes and explicit branch remote or
-  push-remote URLs, deduplicating destinations that identify the same GitHub
+  configured push URLs. Inspect selected named remotes and, when no keep-list
+  is configured, explicit branch remote or push-remote URLs, deduplicating
+  destinations that identify the same GitHub
   repository. The existing PR-context URL parser handles direct GitHub HTTPS
   and SSH URLs but does not expand aliases or rewrites. Unresolved URL
   identities remain a visible verification limitation.
