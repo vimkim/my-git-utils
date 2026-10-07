@@ -18,7 +18,8 @@ Run any command with `-h` for its full usage.
 
 Requires [uv](https://docs.astral.sh/uv/), [just](https://just.systems/), and
 for the individual commands `fzf` (`git-log-pick`) and `gh` (live PR lookup).
-`gh-pr-info --jq` also requires `jq`; `git-unsynced --choose` requires fzf and lazygit.
+`gh-pr-info --jq` also requires `jq`; `git-unsynced` reads lazygit's recent-repository
+history, and `git-unsynced --choose` requires fzf and lazygit.
 
 ```sh
 git clone https://github.com/vimkim/my-git-utils.git ~/gh/my-git-utils
@@ -134,18 +135,19 @@ git-unsynced --all                 # also show repositories with no findings
 git-unsynced --choose              # review worktrees in lazygit, repeating after each visit
 git-unsynced --offline             # use cached remote histories without contacting GitHub
 git-unsynced --quiet               # suppress live progress; keep the final report
-git-unsynced --root ~/projects     # add a scan root; repeat for several roots
 git-unsynced --config audit.toml   # use a chosen personal configuration
 ```
 
-Discovers projects from lazygit history and `~/gh`, `~/temp`, and `~/tmp`, then
-includes every registered worktree. Repositories sharing a Git common directory
-are grouped. Hidden project directories are included; dependency trees, Git
-metadata, ignored files, and reflog-only revisions are outside audit coverage.
-Directory symlinks are followed only when explicitly supplied or registered.
+Checks only repository paths in lazygit's recent-repository history. It does
+not recursively search project folders or add unlisted registered worktrees.
+Repositories sharing a Git common directory are grouped; file checks and
+detached commits cover only listed worktrees, while all branches, shared
+stashes, and tags are checked once per repository. History entries through
+symlinks or worktree subdirectories identify the same worktree. Ignored files
+and reflog-only revisions are outside audit coverage.
 
 Progress goes to stderr immediately and updates once a second, including during
-slow checks. Discovery shows directory and repository-path counts. The audit
+slow checks. Discovery shows recent repository-path counts. The audit
 shows completed repositories, active worktrees or remote destinations, queued
 work, and elapsed time. After two repositories finish, it estimates remaining
 time from the observed completion rate. This estimate is rough: discovery has
@@ -153,8 +155,8 @@ no known total, and a check stalled for more than five seconds makes the ETA
 uncertain. Remote checks show their configured timeout. The final report stays
 on stdout; use `--quiet` to disable progress, including chooser refreshes.
 
-The report checks every branch, detached worktree commits, worktree files,
-shared stashes, and tags. Publication on any configured GitHub destination
+The report checks every branch, listed detached worktree commits, listed
+worktree files, shared stashes, and tags. Publication on any configured GitHub destination
 counts, including forks, separate push URLs, and explicit branch remote URLs.
 Commit identity and ancestry are compared, so work published through equivalent
 changes after a squash merge, rebase, or cherry-pick can still need review.
@@ -177,17 +179,20 @@ Personal settings live in `~/.config/my-git-utils/audit.toml` (respecting
 `XDG_CONFIG_HOME`), separately from Git log display filters:
 
 ```toml
-roots = ["~/gh", "~/temp", "~/tmp"] # replaces the defaults; --root adds paths
 exclude = ["~/gh/intentionally-local"] # excludes the entire project and its worktrees
 timeout = 30                       # seconds per remote check
 concurrency = 4                    # maximum repositories checked at once
 ```
 
-All settings are optional. Lazygit history uses
+All settings are optional. The former `roots` setting and `--root` option are
+no longer supported; remove `roots` from existing configurations. Lazygit
+history uses
 `$XDG_STATE_HOME/lazygit/state.yml` (default `~/.local/state/lazygit/state.yml`),
 falling back to `$XDG_CONFIG_HOME/lazygit/state.yml` when absent. Malformed
-history, failed checks, and missing registered paths appear in the report and
-coverage totals. Colors follow terminal detection and `NO_COLOR`.
+history, failed checks, and missing recent paths appear in the report and
+coverage totals. Missing or empty history gives empty coverage. Runtime depends
+on the listed worktrees and remote checks; narrowing coverage does not impose
+a ten-second deadline. Colors follow terminal detection and `NO_COLOR`.
 
 Exit codes: `0` completed, including ordinary review findings; `1` incomplete
 operational checks or chooser failure; `2` invalid options or configuration.

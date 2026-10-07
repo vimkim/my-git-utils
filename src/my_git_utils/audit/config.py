@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -13,14 +13,12 @@ def config_home() -> Path:
 
 @dataclass
 class Config:
-    roots: list[Path]
     exclude: list[Path]
     timeout: float = 30
     concurrency: int = 4
-    required_roots: list[Path] = field(default_factory=list)
 
 
-def load(path: Path | None, extra_roots: list[str]) -> Config:
+def load(path: Path | None) -> Config:
     explicit = path is not None
     path = path or config_home() / "my-git-utils/audit.toml"
     try:
@@ -31,14 +29,14 @@ def load(path: Path | None, extra_roots: list[str]) -> Config:
         data = {}
     except (OSError, ValueError) as err:
         raise ValueError(f"{path}: {err}") from err
-    unknown = set(data) - {"roots", "exclude", "timeout", "concurrency"}
+    if "roots" in data:
+        raise ValueError("roots is no longer supported; audit coverage uses lazygit recentrepos")
+    unknown = set(data) - {"exclude", "timeout", "concurrency"}
     if unknown:
         raise ValueError(f"unknown configuration keys: {', '.join(sorted(unknown))}")
-    defaults = [str(Path.home() / name) for name in ("gh", "temp", "tmp")]
-    for key in ("roots", "exclude"):
-        value = data.get(key, defaults if key == "roots" else [])
-        if not isinstance(value, list) or any(not isinstance(p, str) for p in value):
-            raise ValueError(f"{key} must be an array of paths")
+    exclude = data.get("exclude", [])
+    if not isinstance(exclude, list) or any(not isinstance(p, str) for p in exclude):
+        raise ValueError("exclude must be an array of paths")
     timeout = data.get("timeout", 30)
     concurrency = data.get("concurrency", 4)
     if (
@@ -51,9 +49,7 @@ def load(path: Path | None, extra_roots: list[str]) -> Config:
     if isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency <= 0:
         raise ValueError("concurrency must be a positive integer")
     return Config(
-        [Path(p).expanduser().absolute() for p in data.get("roots", defaults) + extra_roots],
-        [Path(p).expanduser().resolve() for p in data.get("exclude", [])],
+        [Path(p).expanduser().resolve() for p in exclude],
         timeout,
         concurrency,
-        [Path(p).expanduser().absolute() for p in data.get("roots", []) + extra_roots],
     )

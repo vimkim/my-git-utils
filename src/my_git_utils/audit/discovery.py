@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,50 +31,39 @@ def worktrees(repository: Repository) -> list[Worktree]:
                     "bare" in fields,
                 )
             )
-    return result
+    registered = {w.path: w for w in result}
+    selected: dict[Path, None] = {}
+    for visit in repository.visits:
+        # History can contain a worktree subdirectory. Prefer an exact
+        # registration so a broken nested worktree is still reported unknown.
+        path = (
+            visit
+            if visit in registered
+            else Path(git.run(visit, "rev-parse", "--show-toplevel").removesuffix("\n")).resolve()
+        )
+        selected[path] = None
+    if selected.keys() - registered.keys():
+        raise git.GitError("recent repository path is not a registered worktree")
+    # Audit.primary prefers the first worktree. Keep the main worktree first
+    # when listed; otherwise use history order, most recent first.
+    paths = list(selected)
+    if result and result[0].path in selected:
+        paths.remove(result[0].path)
+        paths.insert(0, result[0].path)
+    return [registered[path] for path in paths]
 
 
 def discover(config: Config, progress: Progress | None = None) -> Coverage:
     coverage = Coverage()
     visits, coverage.errors = recent_repositories()
-    candidates: list[Path] = list(visits)
-    directories = 0
-    for index, root in enumerate(config.roots, 1):
-        if progress:
-            progress.discovered(
-                f"root {index}/{len(config.roots)}: {root}", directories, len(candidates)
-            )
-        if not root.exists():
-            if root in config.required_roots:
-                coverage.errors.append(f"scan root does not exist: {root}")
-            continue
-        if not root.is_dir():
-            coverage.errors.append(f"scan root is not a directory: {root}")
-            continue
-        for directory, children, files in os.walk(
-            root, followlinks=False, onerror=lambda e: coverage.errors.append(str(e))
-        ):
-            directories += 1
-            # os.walk already classified the entries; avoid two stat calls and
-            # several Path objects for every directory in large project trees.
-            ordinary = ".git" in children or ".git" in files
-            bare = "HEAD" in files and "config" in files and "objects" in children
-            children[:] = sorted(c for c in children if c not in {".git", ".venv", "node_modules"})
-            if ordinary or bare:
-                candidates.append(Path(directory))
-            if bare:
-                children[:] = [
-                    c for c in children if c not in {"objects", "refs", "logs", "hooks", "info"}
-                ]
-            if progress and directories % 512 == 0:
-                progress.discovered(
-                    f"root {index}/{len(config.roots)}: {directory}", directories, len(candidates)
-                )
+    candidates = list(dict.fromkeys(visits))
     if progress:
-        progress.discovered("grouping repository paths", directories, len(candidates))
+        progress.discovered("grouping lazygit recent repositories", len(candidates))
     repositories: dict[Path, Repository] = {}
     excluded: set[Path] = set()
-    for path in dict.fromkeys(candidates + config.exclude):
+    for index, path in enumerate(dict.fromkeys(candidates + config.exclude), 1):
+        if progress:
+            progress.discovered(f"grouping path {index}: {path}", len(candidates))
         try:
             common = Path(
                 git.run(
@@ -87,10 +75,10 @@ def discover(config: Config, progress: Progress | None = None) -> Coverage:
             continue
         if path.resolve() in config.exclude:
             excluded.add(common)
-        if common not in repositories:
-            repositories[common] = Repository(common, path)
         if path in visits:
+            if common not in repositories:
+                repositories[common] = Repository(common, path)
             repositories[common].visits.append(path)
     coverage.repositories = [r for c, r in repositories.items() if c not in excluded]
-    coverage.exclusions = sorted(excluded)
+    coverage.exclusions = sorted(excluded & repositories.keys())
     return coverage

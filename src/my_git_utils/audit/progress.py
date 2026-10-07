@@ -28,8 +28,7 @@ class Progress:
         self.thread: Thread | None = None
         self.started = monotonic()
         self.audit_started = self.started
-        self.discovery = "lazygit history and project roots"
-        self.directories = 0
+        self.discovery = "lazygit recent repositories"
         self.candidates = 0
         self.total = total
         self.completed = 0
@@ -54,10 +53,9 @@ class Progress:
         while not self.stopped.wait(1):
             self.emit()
 
-    def discovered(self, location: str, directories: int, candidates: int) -> None:
+    def discovered(self, location: str, candidates: int) -> None:
         with self.lock:
             self.discovery = readable(location)
-            self.directories = directories
             self.candidates = candidates
 
     def scanning(self, total: int) -> None:
@@ -93,8 +91,7 @@ class Progress:
             elapsed = duration(now - self.started)
             if self.total is None:
                 message = (
-                    f"Discovering: {self.directories:,} directories, "
-                    f"{self.candidates} repository paths | elapsed {elapsed} | "
+                    f"Discovering: {self.candidates} recent repository paths | elapsed {elapsed} | "
                     f"ETA unknown until discovery finishes | {self.discovery}"
                 )
             else:

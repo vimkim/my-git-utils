@@ -3,7 +3,9 @@
 Status: accepted on 2026-10-07. All three interview rounds are settled, and the
 user confirmed shared understanding and approved the local documentation merge.
 The implementation host is `my-git-utils`. This document specifies planned
-behavior.
+behavior. The audit scope was revised on 2026-10-07 after execution took more
+than two minutes against a roughly ten-second target: only paths in lazygit's
+recent-repository history are included, including for worktree file checks.
 
 ## Settled requirements
 
@@ -14,11 +16,11 @@ behavior.
   Ignored files and abandoned reflog-only revisions are outside coverage.
   Being behind a remote branch is informational rather than sufficient
   evidence of local work needing publication.
-- Discover repositories from lazygit visit history and selected project
-  folders: `~/gh`, `~/temp`, and `~/tmp`. Include discovered repositories'
-  registered worktrees even when those paths are outside the scan roots.
-  Group worktrees sharing repository history while inspecting each worktree's
-  unfinished files.
+- Discover repositories only from lazygit's recent-repository history. Do not
+  recursively scan project folders or add registered worktrees absent from
+  history. Group worktrees sharing repository history while inspecting only
+  listed worktrees' unfinished files and detached commits. Every local branch,
+  shared stash, and tag remains covered once per included repository.
 - Verified publication means presence on any configured GitHub remote, rather
   than requiring origin or the branch's intended push destination. GitHub
   remotes may include personal forks, organization repositories, and named
@@ -59,13 +61,23 @@ behavior.
 - Read-only inspection grouped those paths into 44 distinct repositories.
   Their registered worktrees include 197 existing paths and seven missing
   registrations. Of the existing paths, 117 are absent from lazygit history,
-  including the initial chezmoi design worktree. A discovered repository's
-  registered worktrees are therefore a necessary source of audit coverage.
+  including the initial chezmoi design worktree. These counts motivated the
+  original broad coverage; the revised scope intentionally omits unlisted
+  worktree files and detached commits to reduce execution time.
 - History has 62 paths under `~/gh`, 14 under `~/temp`, and five outliers:
   `~/.local/share/chezmoi`, `~/.config/nvim`, `~/my-cubrid`,
   `~/tmp/seminar-helper`, and `/home/dev/cubrid-dev2-server`.
 - Eleven discovered repositories have no remotes. The report needs to retain
   this distinction from failed remote refreshes and verified remote state.
+- After the scope revision, `git-unsynced --quiet` covered 44 repositories and
+  80 existing worktrees in 92.94 seconds; `--offline --quiet` took 5.64 seconds.
+  One missing recent path remained a discovery error. These measurements are
+  from the implementation worktree on 2026-10-07 with default concurrency and
+  timeouts. The scope change alone does not meet the ten-second fresh-audit
+  target. A second fresh scan took 92.86 seconds. Its 47 fetches used 106.46
+  seconds cumulatively, with the slowest taking 22.67 seconds; 80 worktree
+  status checks used 1.71 seconds cumulatively. Concurrent repositories make
+  cumulative subprocess time different from overall elapsed time.
 - Lazygit persists `RecentRepos` in its application state and records visits
   from the working directory. Its recent-repository list is not an inventory
   of all repositories on the machine. Primary sources:
@@ -98,7 +110,6 @@ presentation details are routine, reversible defaults presented for review.
 | `git-unsynced --all` | Fresh audit; include repositories with no findings |
 | `git-unsynced --choose` | Report, then choose a worktree and review it in lazygit; repeat until cancelled |
 | `git-unsynced --offline` | Use locally available remote information, explicitly marked cached or inconclusive |
-| `git-unsynced --root PATH` | Add a project scan root; repeat the option for several roots |
 | `git-unsynced --config PATH` | Read a chosen personal audit configuration |
 
 These options can be combined. A normal report requires Git and the installed
@@ -129,8 +140,9 @@ The picker uses worktree paths as actual selection identities, separate from
 decorated display text. Findings specific to a worktree select that worktree;
 repository-wide findings and unchecked branches can select the primary
 existing worktree. Deduplicate entries for the same worktree. The primary
-choice is the main registered worktree when it exists, otherwise the most
-recently visited existing worktree, otherwise a deterministic existing path.
+choice is the main registered worktree when it is listed and inspected,
+otherwise the most recently visited inspected worktree, otherwise a
+deterministic inspected path. Unlisted worktrees are never picker targets.
 A repository without an existing worktree remains reportable but has no
 lazygit picker target.
 
@@ -142,19 +154,16 @@ current report filter. Cancellation or an empty list ends the chooser.
 ## Configuration and operational defaults
 
 - Personal configuration belongs in `~/.config/my-git-utils/audit.toml`,
-  independent of the existing Git log filtering configuration. Configured
-  roots replace the default `~/gh`, `~/temp`, and `~/tmp` list; `--root` adds
-  roots for a run. Exclusions designate projects and apply to all their
-  registered worktrees.
-- Recursively inspect project roots, recognize Git worktree `.git` files as
-  well as ordinary repositories, and deduplicate by canonical Git common
-  directory. Include hidden project directories; prune Git object metadata
-  and dependency trees such as `.venv` and `node_modules`. Do not recursively
-  follow directory symlinks; explicit roots, history entries, and registered
-  worktrees may still identify projects through those paths.
+  independent of the existing Git log filtering configuration. The former
+  `roots` setting and `--root` option are rejected; configurations must remove
+  `roots`. Exclusions designate projects and apply to all their listed
+  worktrees. An exclusion outside the recent list does not expand coverage.
+- Read only lazygit recent paths and deduplicate by canonical Git common
+  directory. Resolve symlinks and worktree subdirectories, and select only the
+  matching registered worktrees for inspection. Do not traverse project roots.
 - Read lazygit state as YAML through a small adapter. Support its current
   state directory and the older config-directory location, respecting XDG
-  paths. Missing history does not prevent root discovery. Malformed or
+  paths. Missing or empty history gives empty coverage. Malformed or
   unreadable history is a visible discovery limitation.
 - Remote checks use a configurable 30-second timeout and bounded concurrency
   of four repositories by default. They must finish without interactive
@@ -164,6 +173,9 @@ current report filter. Cancellation or an empty list ends the chooser.
   tag identities as inconclusive. A failed fresh check does not silently
   switch to an offline success claim.
 - No-finding results are scoped to audit coverage and evidence freshness.
+  Missing recent paths remain visible discovery errors. Unlisted missing
+  worktree registrations are outside coverage. Narrowing coverage reduces
+  work but does not guarantee a ten-second runtime for fresh remote checks.
   Work preserved by equivalent changes after a squash merge may still produce
   review findings. Unconfigured GitHub destinations are outside verification.
 - Return success when the requested report or chooser completes without
@@ -216,9 +228,10 @@ fetched during the interview. Primary Git references:
 Use focused integration cases built from disposable repositories and fake
 remote/chooser tools, following this package's existing testing approach.
 
-- Discover a repository absent from lazygit history, a linked worktree outside
-  the roots, duplicate paths to one common repository, explicit exclusions,
-  malformed history, and missing registered paths.
+- Omit repositories and registered worktrees absent from lazygit history;
+  include listed linked worktrees outside project folders. Cover duplicate
+  paths to one common repository, subdirectories, symlinks, explicit exclusions,
+  missing or empty history, malformed history, and missing recent paths.
 - Detect an unpublished noncurrent branch and detached worktree commit, then
   clear their findings once a configured GitHub remote preserves the commits.
   Verify publication through a fork even when origin lacks the commit.

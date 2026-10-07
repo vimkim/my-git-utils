@@ -16,7 +16,8 @@ from .scan import inspect
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Audit local Git work needing preservation on GitHub."
+        description="Audit local Git work in lazygit's recent repositories "
+        "for preservation on GitHub."
     )
     parser.add_argument("--all", action="store_true", help="include repositories with no findings")
     parser.add_argument("--offline", action="store_true", help="use cached remote evidence")
@@ -24,15 +25,12 @@ def main(argv: list[str] | None = None) -> int:
         "--choose", action="store_true", help="choose worktrees to review in lazygit"
     )
     parser.add_argument(
-        "--root", action="append", default=[], metavar="PATH", help="add a scan root"
-    )
-    parser.add_argument(
         "--config", type=Path, metavar="PATH", help="personal audit TOML configuration"
     )
     parser.add_argument("--quiet", action="store_true", help="suppress live progress on stderr")
     args = parser.parse_args(argv)
     try:
-        config = load(args.config, args.root)
+        config = load(args.config)
     except ValueError as err:
         print(f"git-unsynced: {err}", file=sys.stderr)
         return 2

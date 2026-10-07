@@ -58,8 +58,10 @@ def report(audits: list[Audit], coverage: Coverage, show_all: bool, offline: boo
         markup=False,
     )
     console.print(
-        "Coverage: discovered repositories and registered worktrees; ignored files and "
-        "reflog-only revisions excluded. Commit identities are compared; equivalent changes "
+        "Coverage: lazygit recent repository paths; all branches, stashes, and tags in their "
+        "shared repositories; files and detached commits only in listed worktrees. "
+        "Ignored files and reflog-only revisions excluded. Commit identities are compared; "
+        "equivalent changes "
         "and unconfigured GitHub destinations are outside verification.",
         markup=False,
     )

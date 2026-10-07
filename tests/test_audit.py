@@ -31,11 +31,130 @@ def run_audit(*args: str):
     return subprocess.run(["git-unsynced", *args], text=True, capture_output=True, timeout=20)
 
 
-def test_discovers_registered_worktrees_and_unfinished_files(audit_env, tmp_path):
-    _, root = audit_env
+def recent_repos(home: Path, *paths: Path) -> None:
+    import json
+
+    history = home / ".local/state/lazygit/state.yml"
+    history.parent.mkdir(parents=True, exist_ok=True)
+    history.write_text(json.dumps({"recentrepos": [str(p) for p in paths]}))
+
+
+def test_recent_only_skips_unlisted_repositories_and_nested_repositories(audit_env, tmp_path):
+    home, root = audit_env
+    unlisted = repository(root / "unlisted")
+    visited = repository(tmp_path / "visited")
+    nested = repository(visited / "nested")
+    recent_repos(home, visited, visited)
+    result = run_audit("--offline", "--all")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Repositories: 1" in result.stdout and "Worktrees: 1" in result.stdout
+    assert str(unlisted) not in result.stdout
+    assert f"{nested}\n" not in result.stdout
+    assert str(visited) in result.stdout
+
+
+def test_recent_only_skips_unvisited_worktrees(audit_env, tmp_path, stub_bin, monkeypatch):
+    import shutil
+
+    home, root = audit_env
+    primary = repository(root / "project")
+    linked = tmp_path / "visited worktree"
+    unvisited = tmp_path / "unvisited worktree"
+    git(primary, "worktree", "add", "-q", "-b", "visited", str(linked))
+    git(primary, "worktree", "add", "-q", "--detach", str(unvisited))
+    (primary / "primary-only.txt").write_text("unvisited work")
+    (unvisited / "unvisited-only.txt").write_text("unvisited work")
+    (linked / "visited-only.txt").write_text("visited work")
+    recent_repos(home, linked)
+    real_git = shutil.which("git")
+    wrapper = stub_bin / "git"
+    wrapper.write_text("""#!/usr/bin/env python3
+import os, sys
+if 'status' in sys.argv:
+    assert sys.argv[sys.argv.index('-C') + 1] == os.environ['AUDIT_VISITED_PATH']
+os.execv(os.environ['AUDIT_REAL_GIT'], [os.environ['AUDIT_REAL_GIT'], *sys.argv[1:]])
+""")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("AUDIT_REAL_GIT", real_git)
+    monkeypatch.setenv("AUDIT_VISITED_PATH", str(linked))
+    result = run_audit("--offline", "--all")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Repositories: 1" in result.stdout and "Worktrees: 1" in result.stdout
+    assert "visited-only.txt" in result.stdout
+    assert "primary-only.txt" not in result.stdout
+    assert "unvisited-only.txt" not in result.stdout
+    assert str(primary) not in result.stdout and str(unvisited) not in result.stdout
+
+
+def test_recent_subdirectory_and_symlink_identify_one_worktree(audit_env, tmp_path):
+    home, root = audit_env
+    path = repository(root / "project")
+    subdirectory = path / "src"
+    subdirectory.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(path, target_is_directory=True)
+    (path / "todo.txt").write_text("visited work")
+    recent_repos(home, subdirectory, alias, path)
+    result = run_audit("--offline", "--all")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Repositories: 1" in result.stdout and "Worktrees: 1" in result.stdout
+    assert result.stdout.count("Unfinished files:") == 1
+    assert "todo.txt" in result.stdout
+
+
+def test_primary_is_listed_main_or_most_recent_worktree(audit_env, tmp_path):
+    from my_git_utils.audit.config import load
+    from my_git_utils.audit.discovery import discover
+    from my_git_utils.audit.scan import inspect
+
+    home, root = audit_env
+    main = repository(root / "project")
+    older = tmp_path / "a-older"
+    newer = tmp_path / "z-newer"
+    git(main, "worktree", "add", "-q", "-b", "older", str(older))
+    git(main, "worktree", "add", "-q", "-b", "newer", str(newer))
+    config = load(None)
+    for paths, primary in [((newer, older), newer), ((newer, main, older), main)]:
+        recent_repos(home, *paths)
+        coverage = discover(config)
+        audit = inspect(coverage.repositories[0], config, offline=True)
+        assert audit.primary == primary
+        assert {w.path for w in audit.worktrees} == set(paths)
+
+
+def test_unlisted_exclusion_does_not_expand_coverage(audit_env, tmp_path):
+    home, root = audit_env
+    visited = repository(root / "visited")
+    unlisted = repository(tmp_path / "unlisted")
+    recent_repos(home, visited)
+    config = home / "audit.toml"
+    config.write_text(f'exclude = ["{unlisted}"]\n')
+    result = run_audit("--offline", "--config", str(config))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Repositories: 1" in result.stdout and "Audit exclusions: 0" in result.stdout
+    assert str(unlisted) not in result.stdout
+
+
+@pytest.mark.parametrize("contents", [None, "", "{}", "recentrepos: []\n"])
+def test_recent_only_missing_or_empty_history_has_no_root_fallback(audit_env, contents):
+    home, root = audit_env
+    path = repository(root / "unlisted")
+    if contents is not None:
+        history = home / ".local/state/lazygit/state.yml"
+        history.parent.mkdir(parents=True)
+        history.write_text(contents)
+    result = run_audit("--offline", "--all")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Repositories: 0" in result.stdout and "Worktrees: 0" in result.stdout
+    assert str(path) not in result.stdout
+
+
+def test_inspects_recent_worktrees_and_unfinished_files(audit_env, tmp_path):
+    home, root = audit_env
     path = repository(root / ".hidden" / "project")
     linked = tmp_path / "outside root"
     git(path, "worktree", "add", "-q", "-b", "topic", str(linked))
+    recent_repos(home, path, linked)
     (path / "todo.txt").write_text("work")
     (linked / "other.txt").write_text("other work")
     (linked / ".gitignore").write_text("ignored\n")
@@ -50,7 +169,7 @@ def test_discovers_registered_worktrees_and_unfinished_files(audit_env, tmp_path
     assert "\x1b[" not in result.stdout
 
 
-def test_history_deduplication_project_exclusion_and_missing_registration(audit_env, tmp_path):
+def test_history_deduplication_project_exclusion_and_missing_recent_path(audit_env, tmp_path):
     home, root = audit_env
     path = repository(root / "project")
     linked = tmp_path / "linked"
@@ -73,8 +192,13 @@ def test_history_deduplication_project_exclusion_and_missing_registration(audit_
     assert "Worktrees: 1" in result.stdout
     config.write_text("exclude = []\n")
     result = run_audit("--config", str(config))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Missing registered worktrees: 0" in result.stdout
+    assert str(missing) not in result.stdout
+    recent_repos(home, linked, history_repo, path, missing)
+    result = run_audit("--config", str(config))
     assert result.returncode == 1, result.stderr
-    assert "Missing registered worktrees: 1" in result.stdout
+    assert "Unknown discovery:" in result.stdout
     assert str(missing) in result.stdout
 
 
@@ -136,7 +260,7 @@ os.execv(os.environ['AUDIT_TEST_GIT'], [os.environ['AUDIT_TEST_GIT'], *args])
 def test_fresh_publication_in_any_remote_and_local_state_preservation(
     audit_env, tmp_path, remote_transport
 ):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
     origin = tmp_path / "origin.git"
     fork = tmp_path / "fork.git"
@@ -150,6 +274,7 @@ def test_fresh_publication_in_any_remote_and_local_state_preservation(
     git(path, "switch", "-q", "main")
     detached = tmp_path / "detached"
     git(path, "worktree", "add", "-q", "--detach", str(detached))
+    recent_repos(home, path, detached)
     detached_head = commit(detached, "detached work")
     (path / "file").write_text("staged")
     git(path, "add", "file")
@@ -185,8 +310,9 @@ def test_fresh_publication_in_any_remote_and_local_state_preservation(
 def test_annotated_tag_identity_name_collisions_and_remote_deletion(
     audit_env, tmp_path, remote_transport
 ):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     git(path, "tag", "-a", "v1", "-m", "remote annotation")
     git(path, "tag", "light")
     remote = tmp_path / "remote.git"
@@ -205,8 +331,9 @@ def test_annotated_tag_identity_name_collisions_and_remote_deletion(
 def test_failed_remote_retains_positive_evidence_and_makes_absence_unknown(
     audit_env, tmp_path, remote_transport
 ):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     remote = tmp_path / "remote.git"
     git(path, "clone", "-q", "--bare", str(path), str(remote))
     remote_transport(path, "good", remote)
@@ -227,8 +354,9 @@ def test_failed_remote_retains_positive_evidence_and_makes_absence_unknown(
 
 
 def test_offline_uses_cached_histories_without_fetching(audit_env, remote_transport):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     remote_transport(path, "origin", "FAIL")
     git(path, "update-ref", "refs/remotes/origin/main", git(path, "rev-parse", "HEAD"))
     commit(path, "local work")
@@ -246,8 +374,9 @@ def test_offline_uses_cached_histories_without_fetching(audit_env, remote_transp
 def test_explicit_branch_destination_rewrites_and_push_urls(
     audit_env, tmp_path, remote_transport, monkeypatch
 ):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     remote = tmp_path / "remote.git"
     git(path, "clone", "-q", "--bare", str(path), str(remote))
     url = remote_transport(path, "fork", remote)
@@ -269,10 +398,11 @@ def test_explicit_branch_destination_rewrites_and_push_urls(
 def test_chooser_exact_path_and_return_refresh_loop(audit_env, tmp_path, stub_bin, monkeypatch):
     import json
 
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
     linked = tmp_path / "linked \t worktree\nwith [markup]"
     git(path, "worktree", "add", "-q", "-b", "topic", str(linked))
+    recent_repos(home, linked)
     (linked / "todo").write_text("unfinished")
     log = tmp_path / "chooser.json"
     monkeypatch.setenv("AUDIT_CHOOSER_LOG", str(log))
@@ -283,6 +413,7 @@ import json, os, sys
 from pathlib import Path
 log = Path(os.environ['AUDIT_CHOOSER_LOG'])
 rows = sys.stdin.buffer.read().split(b'\\0')
+assert len([r for r in rows if r]) == 1
 previous = json.loads(log.read_text()) if log.exists() else []
 previous.append([r.decode() for r in rows if r])
 log.write_text(json.dumps(previous))
@@ -322,44 +453,35 @@ def test_history_locations_and_malformed_history_are_visible(audit_env, tmp_path
     history.write_text(f'recentrepos: ["{other}"]\n')
     result = run_audit()
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "Repositories: 2" in result.stdout
+    assert "Repositories: 1" in result.stdout
     history.write_text("recentrepos: [bad yaml\n")
     result = run_audit()
     assert result.returncode == 1
     assert "Unknown discovery: lazygit history" in result.stdout
-    assert "Repositories: 1" in result.stdout
+    assert "Repositories: 0" in result.stdout
 
 
-def test_configured_roots_replace_defaults_cli_adds_roots_and_prunes_dependencies(
-    audit_env, tmp_path
-):
+def test_configured_roots_are_rejected_with_migration_diagnostic(audit_env):
     home, root = audit_env
-    repository(root / "default")
-    chosen = tmp_path / "chosen"
-    repository(chosen / "included")
-    repository(chosen / "node_modules" / "dependency")
-    repository(chosen / ".venv" / "dependency")
-    outside = repository(tmp_path / "outside")
-    (chosen / "symlink").symlink_to(outside, target_is_directory=True)
     config = home / "audit.toml"
-    config.write_text(f'roots = ["{chosen}"]\n')
+    config.write_text(f'roots = ["{root}"]\n')
     result = run_audit("--config", str(config))
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Repositories: 1" in result.stdout
-    result = run_audit("--config", str(config), "--root", str(chosen / "symlink"))
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Repositories: 2" in result.stdout
+    assert result.returncode == 2
+    assert "roots is no longer supported" in result.stderr
+    assert "lazygit recentrepos" in result.stderr
 
 
 def test_shared_stashes_and_independent_tracked_files(audit_env, tmp_path):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     (path / "file").write_text("base")
     (path / ".gitignore").write_text("ignored\n")
     git(path, "add", ".")
     git(path, "commit", "-qm", "files")
     linked = tmp_path / "linked"
     git(path, "worktree", "add", "-q", "-b", "linked", str(linked))
+    recent_repos(home, path, linked)
     (path / "file").write_text("stash me")
     git(path, "stash", "push", "-qm", "shared stash")
     (path / "file").write_text("main work")
@@ -377,7 +499,8 @@ def test_timeout_is_unknown_and_other_repositories_continue(audit_env, tmp_path,
     home, root = audit_env
     timed = repository(root / "timed")
     remote_transport(timed, "timed", "TIMEOUT")
-    repository(root / "local-only")
+    local = repository(root / "local-only")
+    recent_repos(home, timed, local)
     config = home / "audit.toml"
     config.write_text("timeout = 2\n")
     result = run_audit("--config", str(config))
@@ -392,12 +515,13 @@ def test_timeout_is_unknown_and_other_repositories_continue(audit_env, tmp_path,
 def test_shallow_absence_is_inconclusive_and_tip_publication_is_useful(
     audit_env, tmp_path, remote_transport
 ):
-    _, root = audit_env
+    home, root = audit_env
     source = repository(tmp_path / "source")
     base = git(source, "rev-parse", "HEAD")
     commit(source, "second")
     path = root / "shallow"
     git(source, "clone", "-q", "--depth=1", "file://" + str(source), str(path))
+    recent_repos(home, path)
     remote_transport(path, "github", source)
     result = run_audit("--all")
     assert result.returncode == 0, result.stdout + result.stderr
@@ -414,8 +538,9 @@ def test_shallow_absence_is_inconclusive_and_tip_publication_is_useful(
 def test_missing_local_object_does_not_claim_unpublished_work(
     audit_env, tmp_path, remote_transport
 ):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     remote = tmp_path / "remote.git"
     git(path, "clone", "-q", "--bare", str(path), str(remote))
     remote_transport(path, "origin", remote)
@@ -429,8 +554,9 @@ def test_missing_local_object_does_not_claim_unpublished_work(
 def test_default_filters_clean_repositories_all_includes_them_and_behind_is_clean(
     audit_env, tmp_path, remote_transport
 ):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "clean")
+    recent_repos(home, path)
     remote = repository(tmp_path / "remote")
     git(remote, "fetch", "-q", str(path), "main")
     git(remote, "reset", "-q", "--hard", "FETCH_HEAD")
@@ -450,8 +576,9 @@ def test_ssh_alias_and_unresolved_identity_are_reported(
 ):
     import json
 
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     remote = tmp_path / "remote.git"
     git(path, "clone", "-q", "--bare", str(path), str(remote))
     url = remote_transport(path, "origin", remote)
@@ -474,8 +601,9 @@ def test_ssh_alias_and_unresolved_identity_are_reported(
 def test_chooser_publishes_unchecked_branch_then_empty_list_finishes(
     audit_env, tmp_path, remote_transport, stub_bin, monkeypatch, quiet
 ):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     remote = tmp_path / "remote.git"
     git(path, "clone", "-q", "--bare", str(path), str(remote))
     remote_transport(path, "origin", remote)
@@ -512,8 +640,9 @@ subprocess.run(['git', '-C', sys.argv[2], 'push', '-q',
 def test_fresh_fetch_handles_unusual_primary_path_and_noncommit_tag(
     audit_env, tmp_path, remote_transport
 ):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / 'project "quoted"\n')
+    recent_repos(home, path)
     blob = git(path, "hash-object", "-w", "--stdin")
     git(path, "tag", "blob-tag", blob)
     remote = tmp_path / "remote.git"
@@ -544,13 +673,12 @@ def test_invalid_configuration_is_a_diagnostic(audit_env, config_text):
     assert "git-unsynced:" in result.stderr and "Traceback" not in result.stderr
 
 
-def test_requested_missing_root_retains_partial_report(audit_env, tmp_path):
+def test_root_option_cannot_expand_recent_coverage(audit_env, tmp_path):
     _, root = audit_env
     repository(root / "covered")
     result = run_audit("--root", str(tmp_path / "missing-root"))
-    assert result.returncode == 1
-    assert "scan root does not exist" in result.stdout
-    assert "Repositories: 1" in result.stdout
+    assert result.returncode == 2
+    assert "unrecognized arguments: --root" in result.stderr
 
 
 def test_missing_interactive_tools_are_only_required_for_choose(audit_env, tmp_path):
@@ -572,8 +700,9 @@ def test_missing_interactive_tools_are_only_required_for_choose(audit_env, tmp_p
 def test_handled_failure_preserves_refs_and_removes_temporary_evidence(
     audit_env, tmp_path, remote_transport, monkeypatch
 ):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     remote_transport(path, "origin", "FAIL")
     git(path, "tag", "preserved")
     git(path, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*")
@@ -619,6 +748,7 @@ def test_repository_concurrency_is_bounded_and_configurable(
         git(source, "clone", "-q", str(source), str(path))
         git(path, "remote", "remove", "origin")
         remote_transport(path, f"github-{index}", source)
+    recent_repos(home, *(root / str(index) for index in range(5)))
     events = tmp_path / "events"
     monkeypatch.setenv("AUDIT_FETCH_EVENTS", str(events))
 
@@ -649,8 +779,9 @@ def test_repository_concurrency_is_bounded_and_configurable(
 def test_chooser_cancellation_and_failure_have_distinct_exit_statuses(
     audit_env, stub_bin, status, expected
 ):
-    _, root = audit_env
-    repository(root / "project")
+    home, root = audit_env
+    path = repository(root / "project")
+    recent_repos(home, path)
     for tool, code in [("fzf", status), ("lazygit", 99)]:
         stub = stub_bin / tool
         stub.write_text(f"#!/bin/sh\ncat >/dev/null\nexit {code}\n")
@@ -667,8 +798,9 @@ def test_alternate_route_to_same_github_destination_retains_publication(
 ):
     import json
 
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     remote = tmp_path / "remote.git"
     git(path, "clone", "-q", "--bare", str(path), str(remote))
     url = remote_transport(path, "origin", "FAIL")
@@ -688,8 +820,9 @@ def test_repository_transport_configuration_survives_isolation_without_second_re
     import json
     import os
 
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     remote = tmp_path / "remote.git"
     git(path, "clone", "-q", "--bare", str(path), str(remote))
     url = remote_transport(path, "origin", remote)
@@ -710,8 +843,9 @@ def test_repository_transport_configuration_survives_isolation_without_second_re
 
 
 def test_live_stash_ref_is_reported_even_without_reflog(audit_env):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     (path / "file").write_text("saved")
     git(path, "stash", "push", "-qu", "-m", "save me")
     (path / ".git/logs/refs/stash").unlink()
@@ -721,10 +855,12 @@ def test_live_stash_ref_is_reported_even_without_reflog(audit_env):
 
 
 def test_invalid_nested_worktree_link_is_unknown_without_inspecting_parent(audit_env):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     nested = path / "nested"
     git(path, "worktree", "add", "-q", "-b", "nested", str(nested))
+    recent_repos(home, path, nested)
     (nested / ".git").unlink()
     result = run_audit()
     assert result.returncode == 1, result.stdout + result.stderr
@@ -734,8 +870,9 @@ def test_invalid_nested_worktree_link_is_unknown_without_inspecting_parent(audit
 
 
 def test_raw_branch_remote_includes_push_rewrite(audit_env, tmp_path, remote_transport):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     remote = tmp_path / "remote.git"
     git(path, "clone", "-q", "--bare", str(path), str(remote))
     remote_transport(path, "origin", remote)
@@ -752,8 +889,9 @@ def test_progress_arrives_before_slow_worktree_check_finishes(audit_env, stub_bi
     import shutil
     import time
 
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "slow")
+    recent_repos(home, path)
     real_git = shutil.which("git")
     wrapper = stub_bin / "git"
     wrapper.write_text("""#!/usr/bin/env python3
@@ -786,9 +924,10 @@ os.execv(os.environ['AUDIT_REAL_GIT'], [os.environ['AUDIT_REAL_GIT'], *sys.argv[
 def test_progress_counts_finished_repositories_and_qualifies_eta(audit_env, stub_bin, monkeypatch):
     import shutil
 
-    _, root = audit_env
+    home, root = audit_env
     for name in ("a-slow", "b-fast", "c-fast"):
         repository(root / name)
+    recent_repos(home, *(root / name for name in ("a-slow", "b-fast", "c-fast")))
     real_git = shutil.which("git")
     wrapper = stub_bin / "git"
     wrapper.write_text("""#!/usr/bin/env python3
@@ -810,8 +949,9 @@ os.execv(os.environ['AUDIT_REAL_GIT'], [os.environ['AUDIT_REAL_GIT'], *sys.argv[
 
 
 def test_quiet_suppresses_progress_without_suppressing_report(audit_env):
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     result = run_audit("--offline", "--quiet")
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stderr == ""
@@ -824,8 +964,9 @@ def test_many_cached_refs_do_not_require_slow_per_ref_git_processes(
     import shutil
     import time
 
-    _, root = audit_env
+    home, root = audit_env
     path = repository(root / "project")
+    recent_repos(home, path)
     git(path, "remote", "add", "origin", "https://github.com/test/project.git")
     oid = git(path, "rev-parse", "HEAD")
     for index in range(80):
