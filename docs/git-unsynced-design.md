@@ -1,8 +1,9 @@
 # Local Git work audit design
 
-Status: proposed for review on 2026-10-07. All three interview rounds are
-settled; confirmation of shared understanding is pending. The implementation
-host is `my-git-utils`. This document specifies planned behavior.
+Status: accepted on 2026-10-07. All three interview rounds are settled, and the
+user confirmed shared understanding and approved the local documentation merge.
+The implementation host is `my-git-utils`. This document specifies planned
+behavior.
 
 ## Settled requirements
 
