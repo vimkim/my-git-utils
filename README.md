@@ -133,6 +133,7 @@ git-unsynced                       # fresh report of findings and unknown checks
 git-unsynced --all                 # also show repositories with no findings
 git-unsynced --choose              # review worktrees in lazygit, repeating after each visit
 git-unsynced --offline             # use cached remote histories without contacting GitHub
+git-unsynced --quiet               # suppress live progress; keep the final report
 git-unsynced --root ~/projects     # add a scan root; repeat for several roots
 git-unsynced --config audit.toml   # use a chosen personal configuration
 ```
@@ -142,6 +143,15 @@ includes every registered worktree. Repositories sharing a Git common directory
 are grouped. Hidden project directories are included; dependency trees, Git
 metadata, ignored files, and reflog-only revisions are outside audit coverage.
 Directory symlinks are followed only when explicitly supplied or registered.
+
+Progress goes to stderr immediately and updates once a second, including during
+slow checks. Discovery shows directory and repository-path counts. The audit
+shows completed repositories, active worktrees or remote destinations, queued
+work, and elapsed time. After two repositories finish, it estimates remaining
+time from the observed completion rate. This estimate is rough: discovery has
+no known total, and a check stalled for more than five seconds makes the ETA
+uncertain. Remote checks show their configured timeout. The final report stays
+on stdout; use `--quiet` to disable progress, including chooser refreshes.
 
 The report checks every branch, detached worktree commits, worktree files,
 shared stashes, and tags. Publication on any configured GitHub destination

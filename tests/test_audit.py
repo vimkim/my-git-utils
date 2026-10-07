@@ -379,12 +379,14 @@ def test_timeout_is_unknown_and_other_repositories_continue(audit_env, tmp_path,
     remote_transport(timed, "timed", "TIMEOUT")
     repository(root / "local-only")
     config = home / "audit.toml"
-    config.write_text("timeout = 0.15\n")
+    config.write_text("timeout = 2\n")
     result = run_audit("--config", str(config))
     assert result.returncode == 1
-    assert "timed out after 0.15s" in result.stdout
+    assert "timed out after 2s" in result.stdout
     assert "No GitHub remote" in result.stdout
     assert "Repositories: 2" in result.stdout
+    assert "Scanning 1/2 repositories" in result.stderr
+    assert "remote 1/1: test/timed, route 1/1, timeout 2s" in result.stderr
 
 
 def test_shallow_absence_is_inconclusive_and_tip_publication_is_useful(
@@ -468,8 +470,9 @@ def test_ssh_alias_and_unresolved_identity_are_reported(
     assert "unresolved SSH URL identity" in result.stdout
 
 
+@pytest.mark.parametrize("quiet", [False, True])
 def test_chooser_publishes_unchecked_branch_then_empty_list_finishes(
-    audit_env, tmp_path, remote_transport, stub_bin, monkeypatch
+    audit_env, tmp_path, remote_transport, stub_bin, monkeypatch, quiet
 ):
     _, root = audit_env
     path = repository(root / "project")
@@ -496,10 +499,14 @@ subprocess.run(['git', '-C', sys.argv[2], 'push', '-q',
                 os.environ['AUDIT_PUBLICATION_REMOTE'], 'unchecked'], check=True)
 """)
     lazygit.chmod(0o755)
-    result = run_audit("--choose")
+    result = run_audit("--choose", *(["--quiet"] if quiet else []))
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.count("Local commits need review: unchecked") == 1
     assert "Projects with no findings: 1" in result.stdout
+    if quiet:
+        assert result.stderr == ""
+    else:
+        assert result.stderr.count("Scanning 1/1 repositories") >= 2
 
 
 def test_fresh_fetch_handles_unusual_primary_path_and_noncommit_tag(
@@ -738,3 +745,106 @@ def test_raw_branch_remote_includes_push_rewrite(audit_env, tmp_path, remote_tra
     result = run_audit("--all")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "No findings" in result.stdout and "No GitHub remote" not in result.stdout
+
+
+def test_progress_arrives_before_slow_worktree_check_finishes(audit_env, stub_bin, monkeypatch):
+    import select
+    import shutil
+    import time
+
+    _, root = audit_env
+    path = repository(root / "slow")
+    real_git = shutil.which("git")
+    wrapper = stub_bin / "git"
+    wrapper.write_text("""#!/usr/bin/env python3
+import os, sys, time
+if 'status' in sys.argv:
+    time.sleep(2)
+os.execv(os.environ['AUDIT_REAL_GIT'], [os.environ['AUDIT_REAL_GIT'], *sys.argv[1:]])
+""")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("AUDIT_REAL_GIT", real_git)
+    started = time.monotonic()
+    with subprocess.Popen(
+        ["git-unsynced", "--offline"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    ) as process:
+        try:
+            ready, _, _ = select.select([process.stderr], [], [], 0.7)
+            assert ready, "audit is silent while a worktree check is running"
+            line = process.stderr.readline().decode()
+            assert "Discovering" in line or "Scanning" in line
+            assert time.monotonic() - started < 1
+            assert process.poll() is None
+        finally:
+            output, diagnostics = process.communicate(timeout=10)
+    assert process.returncode == 0, diagnostics.decode()
+    assert str(path) in output.decode()
+    assert "active: slow: files 1/1" in diagnostics.decode()
+    assert "Scanning 1/1 repositories" in diagnostics.decode()
+
+
+def test_progress_counts_finished_repositories_and_qualifies_eta(audit_env, stub_bin, monkeypatch):
+    import shutil
+
+    _, root = audit_env
+    for name in ("a-slow", "b-fast", "c-fast"):
+        repository(root / name)
+    real_git = shutil.which("git")
+    wrapper = stub_bin / "git"
+    wrapper.write_text("""#!/usr/bin/env python3
+import os, sys, time
+if 'status' in sys.argv and sys.argv[sys.argv.index('-C') + 1].endswith('a-slow'):
+    time.sleep(6)
+os.execv(os.environ['AUDIT_REAL_GIT'], [os.environ['AUDIT_REAL_GIT'], *sys.argv[1:]])
+""")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("AUDIT_REAL_GIT", real_git)
+    result = run_audit("--offline")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Scanning 2/3 repositories" in result.stderr
+    assert "ETA ~" in result.stderr and "(rough)" in result.stderr
+    assert "ETA uncertain; slow check in progress" in result.stderr
+    assert "a-slow: files 1/1" in result.stderr
+    assert "Scanning 3/3 repositories" in result.stderr and "complete" in result.stderr
+    assert "Scanning" not in result.stdout
+
+
+def test_quiet_suppresses_progress_without_suppressing_report(audit_env):
+    _, root = audit_env
+    path = repository(root / "project")
+    result = run_audit("--offline", "--quiet")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr == ""
+    assert str(path) in result.stdout and "No GitHub remote" in result.stdout
+
+
+def test_many_cached_refs_do_not_require_slow_per_ref_git_processes(
+    audit_env, stub_bin, monkeypatch
+):
+    import shutil
+    import time
+
+    _, root = audit_env
+    path = repository(root / "project")
+    git(path, "remote", "add", "origin", "https://github.com/test/project.git")
+    oid = git(path, "rev-parse", "HEAD")
+    for index in range(80):
+        git(path, "update-ref", f"refs/remotes/origin/branch-{index}", oid)
+    before = git(path, "show-ref")
+    real_git = shutil.which("git")
+    wrapper = stub_bin / "git"
+    wrapper.write_text("""#!/usr/bin/env python3
+import os, sys, time
+if 'update-ref' in sys.argv:
+    time.sleep(0.04)
+os.execv(os.environ['AUDIT_REAL_GIT'], [os.environ['AUDIT_REAL_GIT'], *sys.argv[1:]])
+""")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("AUDIT_REAL_GIT", real_git)
+    started = time.monotonic()
+    result = run_audit("--offline", "--all")
+    elapsed = time.monotonic() - started
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "No findings" in result.stdout
+    assert git(path, "show-ref") == before
+    assert elapsed < 2, f"importing 80 cached refs took {elapsed:.2f}s"

@@ -3,12 +3,13 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .choose import choose
 from .config import load
 from .discovery import discover
+from .progress import Progress
 from .report import report
 from .scan import inspect
 
@@ -28,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--config", type=Path, metavar="PATH", help="personal audit TOML configuration"
     )
+    parser.add_argument("--quiet", action="store_true", help="suppress live progress on stderr")
     args = parser.parse_args(argv)
     try:
         config = load(args.config, args.root)
@@ -42,15 +44,24 @@ def main(argv: list[str] | None = None) -> int:
     if not shutil.which("git"):
         print("git-unsynced: Git is required", file=sys.stderr)
         return 1
-    coverage = discover(config)
-    with ThreadPoolExecutor(max_workers=config.concurrency) as executor:
-        audits = list(
-            executor.map(lambda r: inspect(r, config, args.offline), coverage.repositories)
-        )
+    with Progress(enabled=not args.quiet) as progress:
+        coverage = discover(config, progress)
+        progress.scanning(len(coverage.repositories))
+        results = {}
+        with ThreadPoolExecutor(max_workers=config.concurrency) as executor:
+            futures = {
+                executor.submit(inspect, repository, config, args.offline, progress): repository
+                for repository in coverage.repositories
+            }
+            for future in as_completed(futures):
+                repository = futures[future]
+                results[str(repository.common)] = future.result()
+                progress.finished(repository)
+        audits = [results[str(r.common)] for r in coverage.repositories]
     report(audits, coverage, args.all, args.offline)
     if args.choose:
         try:
-            choose(audits, coverage, config, args.all, args.offline)
+            choose(audits, coverage, config, args.all, args.offline, not args.quiet)
         except (OSError, ValueError) as err:
             print(f"git-unsynced: {err}", file=sys.stderr)
             return 1

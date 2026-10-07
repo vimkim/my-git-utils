@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from . import git
 from .config import Config
 from .model import Audit, Finding
+from .progress import Progress
 from .urls import Destination, cached_refs, destinations
 
 
@@ -56,28 +57,43 @@ def remote_history(
     config: Config,
     offline: bool,
     history: History,
+    progress: Progress | None = None,
 ) -> None:
     for index, target in enumerate(targets):
         checked = False
         for route, url in enumerate(target.urls if not offline else ["cached"]):
             prefix = f"refs/audit/{index}/{route}"
+            if progress:
+                detail = (
+                    f"cached remote {index + 1}/{len(targets)}: {target.identity}"
+                    if offline
+                    else f"remote {index + 1}/{len(targets)}: {target.identity}, "
+                    f"route {route + 1}/{len(target.urls)}, timeout {config.timeout:g}s"
+                )
+                progress.task(
+                    audit.repository,
+                    detail,
+                )
             try:
                 if offline:
                     cached = cached_refs(audit.repository.path, target)
                     if not cached:
                         raise git.GitError("cached remote histories unavailable")
-                    cached_tags = set()
-                    for ref_index, (oid, name) in enumerate(cached):
-                        git.run(
-                            directory,
-                            "update-ref",
-                            f"{prefix}/cache/{ref_index}",
-                            oid,
-                            isolated=True,
-                        )
-                        if name.startswith("refs/tags/"):
-                            cached_tags.add((name.removeprefix("refs/tags/"), oid))
-                    history.tags.update(cached_tags)
+                    git.run(
+                        directory,
+                        "update-ref",
+                        "--stdin",
+                        input_data="".join(
+                            f"update {prefix}/cache/{ref_index} {oid}\n"
+                            for ref_index, (oid, _) in enumerate(cached)
+                        ),
+                        isolated=True,
+                    )
+                    history.tags.update(
+                        (name.removeprefix("refs/tags/"), oid)
+                        for oid, name in cached
+                        if name.startswith("refs/tags/")
+                    )
                 else:
                     git.run(
                         directory,
@@ -136,9 +152,13 @@ def local_tips(audit: Audit) -> list[tuple[str, str, Path | None]]:
     return tips
 
 
-def check_publication(audit: Audit, config: Config, offline: bool) -> None:
+def check_publication(
+    audit: Audit, config: Config, offline: bool, progress: Progress | None = None
+) -> None:
     path = audit.repository.path
     try:
+        if progress:
+            progress.task(audit.repository, "configured remote destinations")
         targets, errors = destinations(path)
         audit.findings.extend(Finding("Unknown", error) for error in errors)
         if not targets:
@@ -154,8 +174,11 @@ def check_publication(audit: Audit, config: Config, offline: bool) -> None:
         with TemporaryDirectory(prefix="git-unsynced-") as temporary:
             directory = Path(temporary)
             prepare_directory(audit, directory)
-            remote_history(audit, directory, targets, config, offline, history)
-            for name, oid, worktree_path in local_tips(audit):
+            remote_history(audit, directory, targets, config, offline, history, progress)
+            tips = local_tips(audit)
+            for index, (name, oid, worktree_path) in enumerate(tips, 1):
+                if progress:
+                    progress.task(audit.repository, f"commit histories {index}/{len(tips)}: {name}")
                 try:
                     count = int(
                         git.run(
@@ -185,6 +208,8 @@ def check_publication(audit: Audit, config: Config, offline: bool) -> None:
                             "Unknown", f"{name}: publication inconclusive ({err})", worktree_path
                         )
                     )
+            if progress:
+                progress.task(audit.repository, "tag identities")
             for tag in git.run(
                 path, "for-each-ref", "--format=%(objectname) %(refname:strip=2)", "refs/tags/"
             ).splitlines():

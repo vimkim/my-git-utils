@@ -12,7 +12,13 @@ class GitError(Exception):
     pass
 
 
-def run(path: Path, *args: str, timeout: float = 30, isolated: bool = False) -> str:
+def run(
+    path: Path,
+    *args: str,
+    timeout: float = 30,
+    isolated: bool = False,
+    input_data: str | None = None,
+) -> str:
     env = dict(os.environ)
     for key in (
         "GIT_DIR",
@@ -54,14 +60,19 @@ def run(path: Path, *args: str, timeout: float = 30, isolated: bool = False) -> 
     try:
         with subprocess.Popen(
             command,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
             start_new_session=True,
         ) as proc:
             try:
-                stdout, stderr = proc.communicate(timeout=timeout)
+                stdout, stderr = proc.communicate(
+                    input=input_data.encode(errors="surrogateescape")
+                    if input_data is not None
+                    else None,
+                    timeout=timeout,
+                )
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.communicate()

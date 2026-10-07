@@ -8,6 +8,7 @@ from . import git
 from .config import Config
 from .history import recent_repositories
 from .model import Repository, Worktree
+from .progress import Progress
 
 
 @dataclass
@@ -34,11 +35,16 @@ def worktrees(repository: Repository) -> list[Worktree]:
     return result
 
 
-def discover(config: Config) -> Coverage:
+def discover(config: Config, progress: Progress | None = None) -> Coverage:
     coverage = Coverage()
     visits, coverage.errors = recent_repositories()
     candidates: list[Path] = list(visits)
-    for root in config.roots:
+    directories = 0
+    for index, root in enumerate(config.roots, 1):
+        if progress:
+            progress.discovered(
+                f"root {index}/{len(config.roots)}: {root}", directories, len(candidates)
+            )
         if not root.exists():
             if root in config.required_roots:
                 coverage.errors.append(f"scan root does not exist: {root}")
@@ -46,22 +52,27 @@ def discover(config: Config) -> Coverage:
         if not root.is_dir():
             coverage.errors.append(f"scan root is not a directory: {root}")
             continue
-        for directory, children, _ in os.walk(
+        for directory, children, files in os.walk(
             root, followlinks=False, onerror=lambda e: coverage.errors.append(str(e))
         ):
+            directories += 1
+            # os.walk already classified the entries; avoid two stat calls and
+            # several Path objects for every directory in large project trees.
+            ordinary = ".git" in children or ".git" in files
+            bare = "HEAD" in files and "config" in files and "objects" in children
             children[:] = sorted(c for c in children if c not in {".git", ".venv", "node_modules"})
-            path = Path(directory)
-            bare = (
-                (path / "HEAD").is_file()
-                and (path / "objects").is_dir()
-                and (path / "config").is_file()
-            )
-            if (path / ".git").exists() or bare:
-                candidates.append(path)
+            if ordinary or bare:
+                candidates.append(Path(directory))
             if bare:
                 children[:] = [
                     c for c in children if c not in {"objects", "refs", "logs", "hooks", "info"}
                 ]
+            if progress and directories % 512 == 0:
+                progress.discovered(
+                    f"root {index}/{len(config.roots)}: {directory}", directories, len(candidates)
+                )
+    if progress:
+        progress.discovered("grouping repository paths", directories, len(candidates))
     repositories: dict[Path, Repository] = {}
     excluded: set[Path] = set()
     for path in dict.fromkeys(candidates + config.exclude):

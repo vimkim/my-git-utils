@@ -7,16 +7,23 @@ from .config import Config
 from .discovery import worktrees
 from .evidence import check_publication
 from .model import Audit, Finding, Repository
+from .progress import Progress
 
 
-def inspect(repository: Repository, config: Config, offline: bool) -> Audit:
+def inspect(
+    repository: Repository, config: Config, offline: bool, progress: Progress | None = None
+) -> Audit:
     audit = Audit(repository)
+    if progress:
+        progress.task(repository, "worktree registrations")
     try:
         audit.worktrees = worktrees(repository)
     except git.GitError as err:
         audit.findings.append(Finding("Unknown", str(err)))
         return audit
-    for worktree in audit.worktrees:
+    for index, worktree in enumerate(audit.worktrees, 1):
+        if progress:
+            progress.task(repository, f"files {index}/{len(audit.worktrees)}: {worktree.path.name}")
         if worktree.bare:
             continue
         if not worktree.exists:
@@ -56,6 +63,8 @@ def inspect(repository: Repository, config: Config, offline: bool) -> Audit:
                 )
         except git.GitError as err:
             audit.findings.append(Finding("Unknown", str(err), worktree.path))
+    if progress:
+        progress.task(repository, "stashes")
     try:
         stashes = ""
         if git.run(repository.path, "for-each-ref", "refs/stash").strip():
@@ -69,5 +78,5 @@ def inspect(repository: Repository, config: Config, offline: bool) -> Audit:
     except git.GitError as err:
         audit.findings.append(Finding("Unknown", str(err)))
     repository.path = audit.primary or repository.common
-    check_publication(audit, config, offline)
+    check_publication(audit, config, offline, progress)
     return audit

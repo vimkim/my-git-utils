@@ -10,6 +10,7 @@ from pathlib import Path
 from .config import Config
 from .discovery import Coverage
 from .model import Audit
+from .progress import Progress
 from .report import report
 from .scan import inspect
 
@@ -39,7 +40,12 @@ def rows(audits: list[Audit], show_all: bool) -> dict[Path, tuple[Audit, str]]:
 
 
 def choose(
-    audits: list[Audit], coverage: Coverage, config: Config, show_all: bool, offline: bool
+    audits: list[Audit],
+    coverage: Coverage,
+    config: Config,
+    show_all: bool,
+    offline: bool,
+    show_progress: bool = True,
 ) -> None:
     while entries := rows(audits, show_all):
         data = b"".join(
@@ -77,7 +83,9 @@ def choose(
         except (ValueError, KeyError, TypeError) as err:
             raise ValueError("fzf returned an invalid worktree selection") from err
         opened = subprocess.run(["lazygit", "-p", str(path)])
-        updated = inspect(audit.repository, config, offline)
+        with Progress(enabled=show_progress, total=1) as progress:
+            updated = inspect(audit.repository, config, offline, progress)
+            progress.finished(audit.repository)
         audits[audits.index(audit)] = updated
         report(audits, coverage, show_all, offline)
         if opened.returncode:
